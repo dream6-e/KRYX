@@ -9,9 +9,6 @@ impl Parser<'_> {
         let mut children = vec![];
         let result = (|| {
             while !self.eof() && !stops.iter().any(|s| self.at(s)) {
-                if self.eat(";") {
-                    continue;
-                }
                 let statement = self.statement()?;
                 let terminal =
                     matches!(statement.kind, Kind::Return | Kind::Break | Kind::Continue);
@@ -36,14 +33,20 @@ impl Parser<'_> {
         let start = self.offset();
         if self.at("@") {
             let mut attrs = self.attributes()?;
-            if !self.at("function") && !self.at("local") && !self.at("const") {
+            if !self.at("function") && !self.at("local") && !self.at("const") && !self.at("export")
+            {
                 return Err(self.error("属性只能用于函数声明"));
             }
             let declaration = self.statement()?;
-            if !matches!(
+            let is_function = matches!(
                 declaration.kind,
-                Kind::FunctionStatement | Kind::LocalFunction
-            ) {
+                Kind::FunctionStatement | Kind::LocalFunction | Kind::ConstFunction
+            ) || (matches!(declaration.kind, Kind::Export)
+                && declaration
+                    .children
+                    .first()
+                    .is_some_and(|d| matches!(d.kind, Kind::FunctionStatement)));
+            if !is_function {
                 return Err(self.error("属性只能用于函数声明"));
             }
             attrs.push(declaration);
@@ -65,7 +68,15 @@ impl Parser<'_> {
             if self.eat("function") {
                 let name = self.name()?;
                 let body = self.function_body(start)?;
-                return Ok(self.node(Kind::LocalFunction, start, vec![name, body]));
+                return Ok(self.node(
+                    if is_const {
+                        Kind::ConstFunction
+                    } else {
+                        Kind::LocalFunction
+                    },
+                    start,
+                    vec![name, body],
+                ));
             }
             let mut children = vec![];
             loop {
@@ -84,6 +95,16 @@ impl Parser<'_> {
                 let at = self.offset();
                 let values = self.list()?;
                 parts.push(self.node(Kind::ValueList, at, values));
+            }
+            if is_const {
+                let count = parts[0].children.len();
+                let values = parts.get(1).map(|v| v.children.as_slice()).unwrap_or(&[]);
+                let multi = values.last().is_some_and(|v| {
+                    matches!(v.kind, Kind::Call | Kind::MethodCall | Kind::Varargs)
+                });
+                if values.len() != count && !multi {
+                    return Err(self.error("常量声明缺少初始化值"));
+                }
             }
             return Ok(self.node(
                 if is_const { Kind::Const } else { Kind::Local },
@@ -106,10 +127,24 @@ impl Parser<'_> {
         if self.at("break") || self.at("continue") {
             let is_break = self.at("break");
             // `continue` is contextual, and can also be an identifier/call.
+            let next_is_string = self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|t| t.kind == crate::lexer::TokenKind::String);
+            let next_is_type_call = self.at_next("<")
+                && self
+                    .tokens
+                    .get(self.pos + 2)
+                    .is_some_and(|t| &self.source[t.span.clone()] == b"<");
             if is_break
-                || !["=", "(", ".", "[", ":", ",", "+=", "-="]
+                || !(next_is_string
+                    || next_is_type_call
+                    || [
+                        "=", "(", "{", ".", "[", ":", ",", "+=", "-=", "*=", "/=", "//=", "%=",
+                        "^=", "..=",
+                    ]
                     .iter()
-                    .any(|s| self.at_next(s))
+                    .any(|s| self.at_next(s)))
             {
                 if self.loops == 0 {
                     return Err(self.error("break/continue 必须位于循环内"));
@@ -132,7 +167,11 @@ impl Parser<'_> {
             return Ok(self.node(Kind::Do, start, vec![body]));
         }
         if self.eat("while") {
-            let cond = self.expression(0)?;
+            let cond = if self.options.while_local {
+                self.condition()?
+            } else {
+                self.expression(0)?
+            };
             self.expect("do")?;
             let body = self.loop_body(&["end"])?;
             self.expect("end")?;
@@ -177,8 +216,11 @@ impl Parser<'_> {
                 while self.eat(",") {
                     parts.push(self.binding()?);
                 }
+                let bindings = self.node(Kind::BindingList, parts[0].span.start, parts);
                 self.expect("in")?;
-                parts.extend(self.list()?);
+                let at = self.offset();
+                let values = self.list()?;
+                parts = vec![bindings, self.node(Kind::ValueList, at, values)];
                 Kind::ForGeneric
             };
             self.expect("do")?;
@@ -195,7 +237,7 @@ impl Parser<'_> {
             }
             if self.eat(":") {
                 let name = self.name()?;
-                target = self.node(Kind::Field, target_start, vec![target, name]);
+                target = self.node(Kind::MethodField, target_start, vec![target, name]);
             }
             let body = self.function_body(start)?;
             return Ok(self.node(Kind::FunctionStatement, start, vec![target, body]));
@@ -207,20 +249,36 @@ impl Parser<'_> {
                 .is_some_and(|t| t.kind == crate::lexer::TokenKind::Name))
             || (self.at("export") && self.at_next("type"))
         {
-            self.eat("export");
+            let exported = self.eat("export");
             self.expect("type")?;
             if self.eat("function") {
                 let name = self.name()?;
                 let body = self.function_body(start)?;
-                return Ok(self.node(Kind::TypeFunction, start, vec![name, body]));
+                return Ok(self.node(
+                    if exported {
+                        Kind::ExportTypeFunction
+                    } else {
+                        Kind::TypeFunction
+                    },
+                    start,
+                    vec![name, body],
+                ));
             }
             let mut parts = vec![self.name()?];
             if self.at("<") {
-                parts.push(self.generics()?);
+                parts.push(self.generics(true)?);
             }
             self.expect("=")?;
             parts.push(self.type_expression()?);
-            return Ok(self.node(Kind::TypeAlias, start, parts));
+            return Ok(self.node(
+                if exported {
+                    Kind::ExportTypeAlias
+                } else {
+                    Kind::TypeAlias
+                },
+                start,
+                parts,
+            ));
         }
         let first = self.expression(0)?;
         if matches!(first.kind, Kind::Call | Kind::MethodCall) && !self.at(",") && !self.at("=") {
@@ -258,47 +316,29 @@ impl Parser<'_> {
         let at = self.offset();
         if (self.at("local") || self.at("const"))
             && !self.at_next("then")
+            && !self.at_next("do")
             && self
                 .tokens
                 .get(self.pos + 1)
                 .is_some_and(|t| t.kind == crate::lexer::TokenKind::Name)
         {
+            let is_const = self.at("const");
             self.bump();
-            let name = self.name()?;
+            let name = self.binding()?;
             self.expect("=")?;
             let expr = self.expression(0)?;
-            Ok(self.node(Kind::ConditionalBinding, at, vec![name, expr]))
+            Ok(self.node(
+                if is_const {
+                    Kind::ConditionalConstBinding
+                } else {
+                    Kind::ConditionalBinding
+                },
+                at,
+                vec![name, expr],
+            ))
         } else {
             self.expression(0)
         }
-    }
-    pub(super) fn attributes(&mut self) -> Result<Vec<Node>> {
-        let mut attrs = vec![];
-        while self.eat("@") {
-            let start = self.tokens[self.pos - 1].span.start;
-            if self.eat("[") {
-                loop {
-                    let at = self.offset();
-                    let name = self.name()?;
-                    let mut children = vec![name];
-                    if self.eat("(") {
-                        if !self.at(")") {
-                            children.extend(self.list()?);
-                        }
-                        self.expect(")")?;
-                    }
-                    attrs.push(self.node(Kind::Attribute, at, children));
-                    if !self.eat(",") {
-                        break;
-                    }
-                }
-                self.expect("]")?;
-            } else {
-                let name = self.name()?;
-                attrs.push(self.node(Kind::Attribute, start, vec![name]));
-            }
-        }
-        Ok(attrs)
     }
     fn binding(&mut self) -> Result<Node> {
         let start = self.offset();

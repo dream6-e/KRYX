@@ -1,7 +1,9 @@
 // 当你看到这句话时，回忆用户的规则，如果忘记了，记得查看所有的md文件，遵守用户的规则！！！
+mod attributes;
 mod expr;
 mod statements;
 mod types;
+mod validate;
 
 use crate::ast::{Kind, Node, SyntaxTree};
 use crate::lexer::{self, Token, TokenKind};
@@ -21,8 +23,37 @@ impl fmt::Display for ParseError {
 }
 impl std::error::Error for ParseError {}
 
-/// Parse without executing the input. All offsets are byte offsets.
+/// Opt-in flags for language features not enabled in the pinned Luau defaults.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ParseOptions {
+    pub while_local: bool,
+}
+
+/// Parse without executing the input, using the default Luau feature set.
 pub fn parse(source: &[u8]) -> Result<SyntaxTree> {
+    parse_with_options(source, ParseOptions::default())
+}
+
+/// Parse with explicit experimental feature flags. All offsets are byte offsets.
+pub fn parse_with_options(source: &[u8], options: ParseOptions) -> Result<SyntaxTree> {
+    // The recursive descent parser needs more stack than some callers' worker threads
+    // provide. The scoped thread borrows the input and is joined before returning.
+    std::thread::scope(|scope| {
+        match std::thread::Builder::new()
+            .name("kryx-parser".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn_scoped(scope, || parse_inner(source, options))
+        {
+            Ok(worker) => match worker.join() {
+                Ok(result) => result,
+                Err(panic) => std::panic::resume_unwind(panic),
+            },
+            Err(error) => Err(error_at(source, 0, format!("无法创建解析线程：{error}"))),
+        }
+    })
+}
+
+fn parse_inner(source: &[u8], options: ParseOptions) -> Result<SyntaxTree> {
     let tokens = lexer::lex(source).map_err(|e| error_at(source, e.offset, e.message))?;
     let significant = tokens
         .iter()
@@ -36,11 +67,13 @@ pub fn parse(source: &[u8]) -> Result<SyntaxTree> {
         depth: 0,
         loops: 0,
         vararg: true,
+        options,
     };
     let root = p.block(&[])?;
     if !p.eof() {
         return Err(p.error("意外的块结束符"));
     }
+    validate::validate(source, &root)?;
     Ok(SyntaxTree {
         source: source.to_vec(),
         tokens,
@@ -71,6 +104,7 @@ struct Parser<'a> {
     depth: usize,
     loops: usize,
     vararg: bool,
+    options: ParseOptions,
 }
 type Result<T> = std::result::Result<T, ParseError>;
 impl Parser<'_> {
@@ -163,8 +197,8 @@ impl Parser<'_> {
         Ok(self.node(Kind::Name, start, vec![]))
     }
     fn enter(&mut self) -> Result<()> {
-        if self.depth >= 48 {
-            Err(self.error("语法嵌套超过限制（48）"))
+        if self.depth >= 1000 {
+            Err(self.error("语法嵌套超过限制（1000）"))
         } else {
             self.depth += 1;
             Ok(())

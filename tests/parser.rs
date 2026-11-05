@@ -80,10 +80,10 @@ fn parses_representative_luau_and_roblox_constructs() {
 
 #[test]
 fn parses_type_operator_precedence() {
-    let t = parse(b"type T = A | (B & C?)").unwrap();
+    let t = parse(b"type T = A | (B & (C?))").unwrap();
     let union = find(&t.root, &|k| *k == Kind::TypeBinary("|".into())).unwrap();
     let intersection = find(&union.children[1], &|k| *k == Kind::TypeBinary("&".into())).unwrap();
-    assert_eq!(intersection.children[1].kind, Kind::TypeOptional);
+    assert!(find(&intersection.children[1], &|k| *k == Kind::TypeOptional).is_some());
 }
 
 #[test]
@@ -139,9 +139,9 @@ fn sample_is_parsed_without_execution() {
 #[test]
 fn rejects_excessive_nesting_instead_of_unbounded_recursion() {
     let mut source = b"return ".to_vec();
-    source.extend(std::iter::repeat(b'(').take(250));
+    source.extend(std::iter::repeat(b'(').take(1200));
     source.extend(b"1");
-    source.extend(std::iter::repeat(b')').take(250));
+    source.extend(std::iter::repeat(b')').take(1200));
     assert!(parse(&source).unwrap_err().message.contains("嵌套"));
 }
 
@@ -152,5 +152,138 @@ fn long_left_associative_expression_can_be_dropped() {
         source.push_str(" + 1");
     }
     let tree = parse(source.as_bytes()).unwrap();
+    let copy = tree.clone();
+    assert_eq!(tree.root, copy.root);
+    assert!(format!("{:?}", tree.root).contains("child_count"));
+    drop(copy);
     drop(tree);
+}
+
+#[test]
+fn deeply_nested_valid_expression_parses_on_small_caller_stack() {
+    let handle = std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(|| {
+            let source = format!("return {}1{}", "(".repeat(800), ")".repeat(800));
+            let tree = parse(source.as_bytes()).unwrap();
+            drop(tree);
+        })
+        .unwrap();
+    handle.join().unwrap();
+}
+
+#[test]
+fn attributes_type_packs_and_conditional_bindings() {
+    let good = [
+        "type F<T...> = (number, T...) -> (number, T...)",
+        "type Foo = {['foo']: number, ['bar']: string, [string]: boolean}",
+        "@[deprecated{use='new', reason='old'}] export function old() end",
+        "local function f() return nil end; local x = if const y: number = f() then y else 0",
+        "local f = function<T>() end; f<<>>()",
+        "print()\x0bprint()",
+        "local continue=print; continue \"hello\"; continue {}; continue<<number>>()",
+        "@[native(`hello`)] local function f() end",
+    ];
+    for s in good {
+        assert!(parse(s.as_bytes()).is_ok(), "{s}");
+    }
+    let bad = [
+        "@wrong local function f() end",
+        "@native @native local function f() end",
+        "@[native(game)] function f() end",
+        "@[deprecated{foo='a'}] function f() end",
+        "@[deprecated{use=1}] function f() end",
+        "@ native function f() end",
+        "local x: {[string]: number, [number]: number}",
+        "local x: {['\\0']: number}",
+        "type F<T...> = (T..., number) -> ()",
+        "type F<T...> = (number, T...) -> ...(T...)",
+        "type F<T..., U> = U",
+        "type F<T=number, U> = U",
+        "type F = <T>number",
+        "type F = nil.foo",
+        "type F = nil<number>",
+        "type F = typeof",
+        "type F = {number, x: string}",
+        "type F = ((number, string))",
+        "type F = ((...number))",
+        "local x: (B...?)",
+        "type X = F<(A,B) | string>",
+        "type F = number? & string",
+        "local f = function<T=number>() end",
+        "print `hello`",
+        "print\n(1)",
+        ";print(1)",
+    ];
+    for s in bad {
+        assert!(parse(s.as_bytes()).is_err(), "{s}");
+    }
+}
+
+#[test]
+fn validates_constants_scope_closures_and_exports() {
+    let good = [
+        "local a=1; type function f() local a=2; return a end",
+        "local a=1; type function f() return {a=2} end",
+        "type function f() local a=1; local function g() return a end end",
+        "const a=1; do local a=2; a=3 end",
+        "const a=1; local a=a+1; a=2",
+        "const a=1; function f(a) a=2 end",
+        "const a=1; local function a() return a end; a=2",
+        "const a={}; a.x=2; a[1]=3",
+        "const a=1; for a=1,2 do a=2 end",
+        "const a=1; for a in pairs({}) do a=2 end",
+        "const self=1; function t:f() self=2 end",
+        "const a,b=f(); return a,b",
+        "export type A = number; return 1",
+        "export local a,b=1,2; export function f() return a end",
+        "if const x = 1 then print(x) end; x=2",
+    ];
+    let bad = [
+        "local a=1; type function f() return a end",
+        "local a=1; type function f() local a=a end",
+        "local a=1; type function f() return t[a] end",
+        "local a=1; type function f() local x: typeof(a) = nil end",
+        "const a=1; local x: typeof(function() a=2 end) = nil",
+        "const a=1; if local x: typeof(function() a=2 end) = 1 then end",
+        "const a=1; for x: typeof(function() a=2 end) = 1,2 do end",
+        "const a=1; for x: typeof(function() a=2 end) in pairs({}) do end",
+        "local a=1; type function f() if local x: typeof(a) = 1 then end end",
+        "const a=1; a=2",
+        "const a=1; a+=1",
+        "const a=1; function f() a=2 end",
+        "const a=1; local a=function() a=2 end",
+        "const a=1; function a() end",
+        "const a=1; for i=1,2 do a=2 end",
+        "const a=1; do a=2 end",
+        "if const x = 1 then x=2 end",
+        "const a,b=1",
+        "const a",
+        "export local function f() end",
+        "export function a.b() end",
+        "export local a=1; export local a=2",
+        "export local a=1; return a",
+        "if true then export local a=1 end",
+    ];
+    for s in good {
+        assert!(parse(s.as_bytes()).is_ok(), "unexpected rejection: {s}");
+    }
+    for s in bad {
+        assert!(parse(s.as_bytes()).is_err(), "unexpected success: {s}");
+    }
+}
+
+#[test]
+fn ast_preserves_important_declaration_and_field_distinctions() {
+    let source = b"export type X = number; local t = {a=1, [a]=2, 3}; function t:go() end; for x,y in pairs(t) do end";
+    let t = parse(source).unwrap();
+    assert_eq!(t.root.children[0].kind, Kind::ExportTypeAlias);
+    let table = find(&t.root.children[1], &|k| *k == Kind::Table).unwrap();
+    assert_eq!(
+        table.children.iter().map(|x| &x.kind).collect::<Vec<_>>(),
+        vec![&Kind::TableRecord, &Kind::TableIndex, &Kind::TableArray]
+    );
+    assert_eq!(t.root.children[2].children[0].kind, Kind::MethodField);
+    assert_eq!(t.root.children[3].children[0].kind, Kind::BindingList);
+    assert_eq!(t.root.children[3].children[1].kind, Kind::ValueList);
 }

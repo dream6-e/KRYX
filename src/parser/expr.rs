@@ -96,9 +96,11 @@ impl Parser<'_> {
                     self.bump();
                     self.bump();
                     let mut children = vec![node];
-                    children.push(self.return_type()?);
-                    while self.eat(",") {
-                        children.push(self.return_type()?);
+                    if !self.at(">") {
+                        children.push(self.type_parameter()?);
+                        while self.eat(",") {
+                            children.push(self.type_parameter()?);
+                        }
                     }
                     self.expect(">")?;
                     self.expect(">")?;
@@ -114,22 +116,29 @@ impl Parser<'_> {
                     let method = self.name()?;
                     let mut children = vec![node, method];
                     if self.at("<") && self.at_next("<") {
+                        let at = self.offset();
                         self.bump();
                         self.bump();
-                        children.push(self.return_type()?);
-                        while self.eat(",") {
-                            children.push(self.return_type()?);
+                        let mut types = vec![];
+                        if !self.at(">") {
+                            types.push(self.type_parameter()?);
+                            while self.eat(",") {
+                                types.push(self.type_parameter()?);
+                            }
                         }
                         self.expect(">")?;
                         self.expect(">")?;
+                        children.push(self.node(Kind::TypeArguments, at, types));
+                    }
+                    if self.at("(") && self.source[self.end()..self.offset()].contains(&b'\n') {
+                        return Err(self.error("跨行调用有歧义，请使用分号"));
                     }
                     children.extend(self.arguments()?);
                     node = self.node(Kind::MethodCall, start, children);
-                } else if self.at("(")
-                    || self.at("{")
-                    || self.token().kind == TokenKind::String
-                    || self.at("`")
-                {
+                } else if self.at("(") || self.at("{") || self.token().kind == TokenKind::String {
+                    if self.at("(") && self.source[node.span.end..self.offset()].contains(&b'\n') {
+                        return Err(self.error("跨行调用有歧义，请使用分号"));
+                    }
                     let mut children = vec![node];
                     children.extend(self.arguments()?);
                     node = self.node(Kind::Call, start, children);
@@ -144,7 +153,7 @@ impl Parser<'_> {
         }
         Ok(node)
     }
-    fn arguments(&mut self) -> Result<Vec<Node>> {
+    pub(super) fn arguments(&mut self) -> Result<Vec<Node>> {
         if self.eat("(") {
             let args = if self.at(")") { vec![] } else { self.list()? };
             self.expect(")")?;
@@ -156,9 +165,6 @@ impl Parser<'_> {
             let start = self.offset();
             self.bump();
             Ok(vec![self.node(Kind::String, start, vec![])])
-        } else if self.eat("`") {
-            let start = self.tokens[self.pos - 1].span.start;
-            Ok(vec![self.interpolation(start)?])
         } else {
             Err(self.error("需要函数调用参数"))
         }
@@ -168,19 +174,23 @@ impl Parser<'_> {
         while !self.at("}") {
             let at = self.offset();
             let mut children = vec![];
+            let kind;
             if self.eat("[") {
+                kind = Kind::TableIndex;
                 children.push(self.expression(0)?);
                 self.expect("]")?;
                 self.expect("=")?;
                 children.push(self.expression(0)?);
             } else if self.token().kind == TokenKind::Name && self.at_next("=") {
+                kind = Kind::TableRecord;
                 children.push(self.name()?);
                 self.expect("=")?;
                 children.push(self.expression(0)?);
             } else {
+                kind = Kind::TableArray;
                 children.push(self.expression(0)?);
             }
-            fields.push(self.node(Kind::TableField, at, children));
+            fields.push(self.node(kind, at, children));
             if !self.eat(",") && !self.eat(";") {
                 break;
             }
@@ -221,7 +231,7 @@ impl Parser<'_> {
     pub(super) fn function_body(&mut self, start: usize) -> Result<Node> {
         let mut parts = vec![];
         if self.at("<") {
-            parts.push(self.generics()?);
+            parts.push(self.generics(false)?);
         }
         let at = self.offset();
         self.expect("(")?;

@@ -61,6 +61,7 @@ fn compare_with_official_luau_compiler_when_available() {
         fs::write(&file, case).unwrap();
         let official = Command::new(&compiler)
             .arg("--null")
+            .arg("--only-parse")
             .arg(&file)
             .output()
             .expect("failed to start LUAU_COMPILE");
@@ -98,6 +99,7 @@ fn compare_external_conformance_directory_when_requested() {
         let bytes = fs::read(file).unwrap();
         let official = Command::new(&compiler)
             .arg("--null")
+            .arg("--only-parse")
             .arg(file)
             .output()
             .expect("failed to start LUAU_COMPILE");

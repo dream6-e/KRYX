@@ -144,7 +144,10 @@ impl Lexer<'_> {
             self.pos += 1;
         }
         if next == b'z' {
-            while self.byte(0).is_some_and(|x| x.is_ascii_whitespace()) {
+            while self
+                .byte(0)
+                .is_some_and(|x| (x.is_ascii_whitespace() || x == 0x0b))
+            {
                 self.pos += 1;
             }
         }
@@ -205,9 +208,12 @@ impl Lexer<'_> {
             }
             let start = self.pos;
             let c = self.byte(0).unwrap();
-            if c.is_ascii_whitespace() {
+            if c.is_ascii_whitespace() || c == 0x0b {
                 self.pos += 1;
-                while self.byte(0).is_some_and(|c| c.is_ascii_whitespace()) {
+                while self
+                    .byte(0)
+                    .is_some_and(|c| (c.is_ascii_whitespace() || c == 0x0b))
+                {
                     self.pos += 1;
                 }
                 self.push(TokenKind::Whitespace, start);
