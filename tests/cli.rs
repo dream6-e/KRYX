@@ -41,7 +41,12 @@ fn help_succeeds_and_invalid_invocation_fails() {
     assert!(help.status.success());
     assert!(String::from_utf8(help.stdout).unwrap().contains("基础框架"));
     assert!(!binary().output().unwrap().status.success());
-    assert!(!binary().args(["a.lua", "b.lua"]).output().unwrap().status.success());
+    assert!(!binary()
+        .args(["a.lua", "b.lua"])
+        .output()
+        .unwrap()
+        .status
+        .success());
 }
 
 #[test]
@@ -78,6 +83,27 @@ fn missing_or_directory_input_reports_an_error() {
     for input in [dir.0.join("missing.lua"), dir.0.clone()] {
         let result = binary().arg(input).output().unwrap();
         assert!(!result.status.success());
-        assert!(String::from_utf8(result.stderr).unwrap().contains("无法读取"));
+        assert!(String::from_utf8(result.stderr)
+            .unwrap()
+            .contains("无法读取"));
     }
+}
+
+#[test]
+fn check_mode_parses_without_running_or_writing() {
+    let dir = TestDir::new();
+    let input = dir.0.join("check.luau");
+    let output = dir.0.join("check.K.lua");
+    fs::write(&input, b"error('must not execute')").unwrap();
+    let result = binary().args(["--check"]).arg(&input).output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!output.exists());
+    fs::write(&input, b"local x =").unwrap();
+    let result = binary().args(["--check"]).arg(&input).output().unwrap();
+    assert!(!result.status.success());
+    assert!(!output.exists());
 }

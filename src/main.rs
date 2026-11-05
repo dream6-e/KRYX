@@ -18,6 +18,26 @@ fn main() -> ExitCode {
             println!("{}", cli::usage());
             ExitCode::SUCCESS
         }
+        cli::Command::Check(paths) => {
+            match source::read(&paths.input) {
+                Ok(source) => {
+                    match kryx::parser::parse(&source) {
+                        Ok(tree) => {
+                            println!("解析完成：{}（{} 个顶层语句）。实验性解析器，不等同于官方语法验证。", paths.input.display(), tree.root.children.len());
+                            ExitCode::SUCCESS
+                        }
+                        Err(error) => {
+                            eprintln!("{}:{error}", paths.input.display());
+                            ExitCode::from(1)
+                        }
+                    }
+                }
+                Err(error) => {
+                    eprintln!("无法读取 {}：{error}", paths.input.display());
+                    ExitCode::from(1)
+                }
+            }
+        }
         cli::Command::Input(paths) => match source::read(&paths.input) {
             Ok(source) => {
                 eprintln!(

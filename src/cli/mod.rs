@@ -12,10 +12,11 @@ pub struct Paths {
 pub enum Command {
     Help,
     Input(Paths),
+    Check(Paths),
 }
 
 pub fn usage() -> &'static str {
-    "用法：cargo run -- <输入文件>\n       cargo run -- --help\n当前仅提供基础框架；不会生成混淆文件。"
+    "用法：cargo run -- <输入文件>\n       cargo run -- --check <输入文件>\n       cargo run -- --help\n解析器尚未覆盖全部 Luau 语法；当前仅提供基础框架；不会生成混淆文件。"
 }
 
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, &'static str> {
@@ -29,6 +30,12 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, &'stat
         };
     }
 
+    let check = first == "--check";
+    let first = if check {
+        args.next().ok_or("缺少输入文件")?
+    } else {
+        first
+    };
     let input = if first == "--" {
         args.next().ok_or("缺少输入文件")?
     } else {
@@ -43,7 +50,12 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, &'stat
 
     let input = PathBuf::from(input);
     let output = output_path(&input).ok_or("输入路径必须包含文件名")?;
-    Ok(Command::Input(Paths { input, output }))
+    let paths = Paths { input, output };
+    Ok(if check {
+        Command::Check(paths)
+    } else {
+        Command::Input(paths)
+    })
 }
 
 fn output_path(input: &Path) -> Option<PathBuf> {
