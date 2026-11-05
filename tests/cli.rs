@@ -60,7 +60,7 @@ fn reading_input_does_not_modify_or_create_output() {
     let result = binary().arg(&input).output().unwrap();
     assert!(!result.status.success());
     let error = String::from_utf8(result.stderr).unwrap();
-    assert!(error.contains("尚未实现"));
+    assert!(error.contains("混淆失败"));
     assert_eq!(fs::read(&input).unwrap(), contents);
     assert!(!output.exists());
 }
@@ -105,5 +105,54 @@ fn check_mode_parses_without_running_or_writing() {
     fs::write(&input, b"local x =").unwrap();
     let result = binary().args(["--check"]).arg(&input).output().unwrap();
     assert!(!result.status.success());
+    assert!(!output.exists());
+}
+
+#[test]
+fn supported_input_produces_reproducible_output_without_changing_input() {
+    let dir = TestDir::new();
+    let input = dir.0.join("simple.lua");
+    let output = dir.0.join("simple.K.lua");
+    let source = b"local a = 7; print(a); return a, nil";
+    fs::write(&input, source).unwrap();
+    let first = binary()
+        .args(["--seed", "1234567890123456"])
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(fs::read(&input).unwrap(), source);
+    let generated = fs::read(&output).unwrap();
+    assert!(!generated.is_empty());
+    fs::remove_file(&output).unwrap();
+    assert!(binary()
+        .args(["--seed", "1234567890123456"])
+        .arg(&input)
+        .status()
+        .unwrap()
+        .success());
+    assert_eq!(generated, fs::read(output).unwrap());
+}
+
+#[test]
+fn unsupported_input_and_invalid_seed_do_not_create_output() {
+    let dir = TestDir::new();
+    let input = dir.0.join("unsupported.lua");
+    let output = dir.0.join("unsupported.K.lua");
+    fs::write(&input, b"while true do end").unwrap();
+    assert!(!binary().arg(&input).output().unwrap().status.success());
+    assert!(!output.exists());
+    fs::write(&input, b"return 1").unwrap();
+    assert!(!binary()
+        .args(["--seed", "1"])
+        .arg(&input)
+        .output()
+        .unwrap()
+        .status
+        .success());
     assert!(!output.exists());
 }

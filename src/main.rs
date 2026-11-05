@@ -2,6 +2,7 @@
 mod cli;
 mod source;
 
+use std::io::Write;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -38,20 +39,50 @@ fn main() -> ExitCode {
                 }
             }
         }
-        cli::Command::Input(paths) => match source::read(&paths.input) {
-            Ok(source) => {
-                eprintln!(
-                    "已读取 {}（{} 字节）。混淆功能尚未实现；未生成 {}。",
-                    paths.input.display(),
-                    source.len(),
-                    paths.output.display()
-                );
-                ExitCode::from(1)
+        cli::Command::Input(paths, seed) => {
+            let source = match source::read(&paths.input) {
+                Ok(source) => source,
+                Err(error) => {
+                    eprintln!("无法读取 {}：{error}", paths.input.display());
+                    return ExitCode::from(1);
+                }
+            };
+            let seed = match seed
+                .map(Ok)
+                .unwrap_or_else(kryx::obfuscator::seed::generate)
+            {
+                Ok(seed) => seed,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::from(1);
+                }
+            };
+            let output = match kryx::obfuscator::generate(&source, seed) {
+                Ok(output) => output,
+                Err(error) => {
+                    eprintln!("混淆失败：{error}");
+                    return ExitCode::from(1);
+                }
+            };
+            let mut file = match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&paths.output)
+            {
+                Ok(file) => file,
+                Err(error) => {
+                    eprintln!("无法创建 {}：{error}", paths.output.display());
+                    return ExitCode::from(1);
+                }
+            };
+            if let Err(error) = file.write_all(output.as_bytes()) {
+                drop(file);
+                let _ = std::fs::remove_file(&paths.output);
+                eprintln!("写入失败：{error}");
+                return ExitCode::from(1);
             }
-            Err(error) => {
-                eprintln!("无法读取 {}：{error}", paths.input.display());
-                ExitCode::from(1)
-            }
-        },
+            println!("已生成 {}（种子：{seed}）", paths.output.display());
+            ExitCode::SUCCESS
+        }
     }
 }
