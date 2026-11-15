@@ -49,33 +49,31 @@ pub fn generate(m: &[Vec<u32>], cfg: &OpcodeConfig, rng: &mut OpcodesRng) -> Str
 
     let mut idiv = OpcodeBuilder::new(m[38].clone(), cfg, rng);
     let idiv_b = idiv.rk(3); let idiv_c = idiv.rk(4); let idiv_a = idiv.raw_inst(2);
-    out.push_str(&idiv.build(&format!("{{STK}}[{}] = math.floor({} / {})", idiv_a, idiv_b, idiv_c)));
-
-    let bit_lib = "local bit = bit32 or bit or {band=function() return 0 end, bor=function() return 0 end, bxor=function() return 0 end, lshift=function() return 0 end, rshift=function() return 0 end, bnot=function() return 0 end}; ";
+    out.push_str(&idiv.build(&format!("{{STK}}[{}] = math_floor({} / {})", idiv_a, idiv_b, idiv_c)));
 
     let mut band = OpcodeBuilder::new(m[39].clone(), cfg, rng);
     let band_b = band.rk(3); let band_c = band.rk(4); let band_a = band.raw_inst(2);
-    out.push_str(&band.build(&format!("{} {{STK}}[{}] = bit.band({}, {})", bit_lib, band_a, band_b, band_c)));
+    out.push_str(&band.build(&format!("{{STK}}[{}] = band_fn({}, {})", band_a, band_b, band_c)));
 
     let mut bor = OpcodeBuilder::new(m[40].clone(), cfg, rng);
     let bor_b = bor.rk(3); let bor_c = bor.rk(4); let bor_a = bor.raw_inst(2);
-    out.push_str(&bor.build(&format!("{} {{STK}}[{}] = bit.bor({}, {})", bit_lib, bor_a, bor_b, bor_c)));
+    out.push_str(&bor.build(&format!("{{STK}}[{}] = bor_fn({}, {})", bor_a, bor_b, bor_c)));
 
     let mut bxor = OpcodeBuilder::new(m[41].clone(), cfg, rng);
     let bxor_b = bxor.rk(3); let bxor_c = bxor.rk(4); let bxor_a = bxor.raw_inst(2);
-    out.push_str(&bxor.build(&format!("{} {{STK}}[{}] = bit.bxor({}, {})", bit_lib, bxor_a, bxor_b, bxor_c)));
+    out.push_str(&bxor.build(&format!("{{STK}}[{}] = bxor_fn({}, {})", bxor_a, bxor_b, bxor_c)));
 
     let mut shl = OpcodeBuilder::new(m[42].clone(), cfg, rng);
     let shl_b = shl.rk(3); let shl_c = shl.rk(4); let shl_a = shl.raw_inst(2);
-    out.push_str(&shl.build(&format!("{} {{STK}}[{}] = (bit.lshift or bit.lsh)({}, {})", bit_lib, shl_a, shl_b, shl_c)));
+    out.push_str(&shl.build(&format!("{{STK}}[{}] = lshift_fn({}, {})", shl_a, shl_b, shl_c)));
 
     let mut shr = OpcodeBuilder::new(m[43].clone(), cfg, rng);
     let shr_b = shr.rk(3); let shr_c = shr.rk(4); let shr_a = shr.raw_inst(2);
-    out.push_str(&shr.build(&format!("{} {{STK}}[{}] = (bit.rshift or bit.rsh)({}, {})", bit_lib, shr_a, shr_b, shr_c)));
+    out.push_str(&shr.build(&format!("{{STK}}[{}] = rshift_fn({}, {})", shr_a, shr_b, shr_c)));
 
     let mut bnot = OpcodeBuilder::new(m[44].clone(), cfg, rng);
     let bnot_b = bnot.raw_inst(3); let bnot_a = bnot.raw_inst(2);
-    out.push_str(&bnot.build(&format!("{} {{STK}}[{}] = bit.bnot({})", bit_lib, bnot_a, bnot_b)));
+    out.push_str(&bnot.build(&format!("{{STK}}[{}] = bnot_fn({})", bnot_a, bnot_b)));
 
     let mut addint = OpcodeBuilder::new(m[58].clone(), cfg, rng);
     let addint_b = addint.rk(3); let addint_c = addint.rk(4); let addint_a = addint.raw_inst(2);

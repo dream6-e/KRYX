@@ -60,6 +60,29 @@ impl Generator {
             builtin_pool_indices.push(pos);
         }
 
+        // 最外层 return ({ ... }) 壳：全部内建函数作为壳字段一次性解析，
+        // wai 函数体只通过壳引用访问内建函数，不直接出现 math.floor 等全局引用。
+        // 环境探测（getgenv/getfenv/_ENV/_G）按约定保留原样。
+        let var_shell = rng.name();
+        let k_sel = rng.name();
+        let k_floor = rng.name();
+        let k_random = rng.name();
+        let k_char = rng.name();
+        let k_byte = rng.name();
+        let k_sub = rng.name();
+        let k_concat = rng.name();
+        let k_unpack = rng.name();
+        let k_pcall = rng.name();
+        let k_setmt = rng.name();
+        let k_type = rng.name();
+        let k_pairs = rng.name();
+        let k_bx = rng.name();
+        let k_band = rng.name();
+        let k_bor = rng.name();
+        let k_lshift = rng.name();
+        let k_rshift = rng.name();
+        let k_bnot = rng.name();
+
         let chacha_key: [u32; 8] = std::array::from_fn(|_| rng.next());
         let chacha_salt: u32 = rng.next();
 
@@ -90,16 +113,15 @@ impl Generator {
         combined_payload.extend(pool_bytes); combined_payload.extend(rewritten_chunks);
         
         let key_kryvex = String::from("x1"); let p_out: Vec<String> = (0..6).map(|_| rng.name()).collect();
-        let var_s = rng.name(); let fn_N_ = rng.name(); let var_fU = rng.name(); let var_L = rng.name(); let var_get_count = rng.name();
+        let var_s = rng.name(); let fn_N_ = rng.name(); let var_L = rng.name(); let var_get_count = rng.name();
         let hex_select_idx = format!("{:#x}", rng.range(10, 255));
         let var_state_flag = rng.name();
         let wai = rng.name();
         let mut header_block = String::new();
-        header_block.push_str(&format!("return ({{ {} = function(agv,aggv,agv,agv,agv,aggv,agv,agv,aggv,aggv,aggv,agggv,agggv,agggv,agggv,aggv,{},{},{},{}, ...)\n", wai, p_out[0], p_out[1], p_out[2], p_out[3]));
+        header_block.push_str(&format!("return ({{ {} = function({},aggv,agv,agv,agv,aggv,agv,agv,aggv,aggv,aggv,agggv,agggv,agggv,agggv,aggv,{},{},{},{}, ...)\n", wai, var_shell, p_out[0], p_out[1], p_out[2], p_out[3]));
         header_block.push_str(&format!("local {} = {{}}; local {} = false; ", var_s, var_state_flag));
-        header_block.push_str(&format!("local {} = bit32 and bit32.rshift or bit and bit.rshift; ", var_fU));
-        header_block.push_str(&format!("local {} = function(q, s, M, C) s[{}] = select; end; ", fn_N_, hex_select_idx));
-        header_block.push_str(&format!("{}(nil, {}, nil, nil); ", fn_N_, var_s));
+        header_block.push_str(&format!("local {} = function(q, s, M, C) s[{}] = M; end; ", fn_N_, hex_select_idx));
+        header_block.push_str(&format!("{}(nil, {}, {}.{}, nil); ", fn_N_, var_s, var_shell, k_sel));
         
         let keys = CipherKeys { 
             grp1: rng.range(0x10, 0x7F) as u64, 
@@ -117,10 +139,8 @@ impl Generator {
         let fn_ba = rng.name();
         let fn_bs = rng.name();
         let mut block_p_def = String::new();
-        block_p_def.push_str(&format!("local {}={}; local {}={}; local {}={}; ", 
-            fn_bx, "bit32 and bit32.bxor or bit and bit.bxor or function(a,b)local r,p=0,1;while a>0 or b>0 do local ra,rb=a%2,b%2;if ra~=rb then r=r+p end;a,b,p=math.floor(a/2),math.floor(b/2),p*2 end;return r end",
-            fn_ba, "bit32 and bit32.band or bit and bit.band or function(a,b)local r,p=0,1;while a>0 and b>0 do local ra,rb=a%2,b%2;if ra==1 and rb==1 then r=r+p end;a,b,p=math.floor(a/2),math.floor(b/2),p*2 end;return r end",
-            fn_bs, "bit32 and bit32.rshift or bit and bit.rshift or function(a,n)return math.floor(a/(2^n))end"
+        block_p_def.push_str(&format!("local {}={}.{}; local {}={}.{}; local {}={}.{}; ",
+            fn_bx, var_shell, k_bx, fn_ba, var_shell, k_band, fn_bs, var_shell, k_rshift
         ));
         let tbl_def = format!(
             "local {p}={{}};{p}[{g1}]={{}};{p}[{g1}][{bx}]={fbx};{p}[{g1}][{add}]=function(a,b)return a+b end;{p}[{g1}][{ba}]={fba};{p}[{g2}]={{}};{p}[{g2}][{ba2}]=function(a)return {fba}(a,{max_u32})end;{p}[{g2}][{bs2}]=function(a)return {fbs}(a,{one})end;",
@@ -162,7 +182,7 @@ impl Generator {
         block_execute_def.push_str(&format!("local function {}(chunk, env, upvals, ...) ", fn_execute));
         block_execute_def.push_str(&format!("local {} = function(...) return {}[{}]('#', ...) end; ", var_get_count, var_s, hex_select_idx));
         block_execute_def.push_str(&format!("local {} = {}(...); ", var_L, var_get_count));
-        block_execute_def.push_str(&format!("local unpack, zm = unpack or table and table.unpack or function() end, function(...) return {{n={}(...),...}} end; ", var_get_count));
+        block_execute_def.push_str(&format!("local unpack, zm = {}.{}, function(...) return {{n={}(...),...}} end; ", var_shell, k_unpack, var_get_count));
         block_execute_def.push_str(&format!("local {}, {}, {}, {}, {}, {}, {} = chunk.opcodes, chunk.a_arr, chunk.b_arr, chunk.c_arr, 1, {{}}, 0; ", var_opcodes, var_a_arr, var_b_arr, var_c_arr, var_pc, var_stk, var_top));
         block_execute_def.push_str(&format!("for _=1,chunk.numparams do {}[_-1] = {}[{}](_,...) end; ", var_stk, var_s, hex_select_idx));
         block_execute_def.push_str(&format!("local {} = {} - chunk.numparams; local {} = {{{}[{}](chunk.numparams + 1, ...)}}; ", var_varargs_len, var_L, var_varargs, var_s, hex_select_idx));
@@ -478,10 +498,13 @@ impl Generator {
         let mut out = String::new();
         out.push_str(&format!("local {} = ...;\n", var_l));
         out.push_str(&header_block);
+        out.push_str(&format!("local math_floor, string_char, string_sub, string_byte, table_concat = {}.{}, {}.{}, {}.{}, {}.{}, {}.{}; local math_random = {}.{}; local setmetatable = {}.{}; local type = {}.{}; local pairs = {}.{}; local pcall = {}.{}; local bxor_fn, band_fn, bor_fn, lshift_fn, rshift_fn, bnot_fn = {}.{}, {}.{}, {}.{}, {}.{}, {}.{}, {}.{}; ",
+            var_shell, k_floor, var_shell, k_char, var_shell, k_sub, var_shell, k_byte, var_shell, k_concat,
+            var_shell, k_random, var_shell, k_setmt, var_shell, k_type, var_shell, k_pairs, var_shell, k_pcall,
+            var_shell, k_bx, var_shell, k_band, var_shell, k_bor, var_shell, k_lshift, var_shell, k_rshift, var_shell, k_bnot));
         out.push_str(&at.setup);
         out.push_str(&format!(" local {} = 0; ", key_seed_var));
         out.push_str(" ");
-        out.push_str("local math_floor, string_char, string_sub, string_byte, table_concat = math.floor, string.char, string.sub, string.byte, table.concat; ");
 
         for part in parts {
             out.push_str(&part);
@@ -506,6 +529,8 @@ impl Generator {
         
         out.push_str(" ");
         out.push_str(&format!("return {}(main_chunk, {}, {{}}, {}) end,{}=function(x) x:{}() end", fn_execute, var_boot_env, var_l, fu, wai));
+        out.push_str(&format!(",{}=select,{}=math.floor,{}=math.random,{}=string.char,{}=string.byte,{}=string.sub,{}=table.concat,{}=unpack or table and table.unpack or function() end,{}=pcall,{}=setmetatable,{}=type,{}=pairs,{}=bit32 and bit32.bxor or bit and bit.bxor or function(a,b)a,b=a%4294967296,b%4294967296;local r,p=0,1;while a>0 or b>0 do local ra,rb=a%2,b%2;if ra~=rb then r=r+p end;a,b,p=(a-a%1)/2,(b-b%1)/2,p*2 end;return r end,{}=bit32 and bit32.band or bit and bit.band or function(a,b)a,b=a%4294967296,b%4294967296;local r,p=0,1;while a>0 and b>0 do local ra,rb=a%2,b%2;if ra==1 and rb==1 then r=r+p end;a,b,p=(a-a%1)/2,(b-b%1)/2,p*2 end;return r end,{}=bit32 and bit32.bor or bit and bit.bor or function(a,b)a,b=a%4294967296,b%4294967296;local r,p=0,1;while a>0 or b>0 do local ra,rb=a%2,b%2;if ra==1 or rb==1 then r=r+p end;a,b,p=(a-a%1)/2,(b-b%1)/2,p*2 end;return r end,{}=bit32 and bit32.lshift or bit and (bit.lshift or bit.lsh) or function(a,n)a=a%4294967296;return (a*(2^n))%4294967296 end,{}=bit32 and bit32.rshift or bit and bit.rshift or function(a,n)a=a%4294967296;return (a - a % (2^n)) / (2^n) end,{}=bit32 and bit32.bnot or bit and bit.bnot or function(a)a=a%4294967296;return 4294967295 - a end",
+            k_sel, k_floor, k_random, k_char, k_byte, k_sub, k_concat, k_unpack, k_pcall, k_setmt, k_type, k_pairs, k_bx, k_band, k_bor, k_lshift, k_rshift, k_bnot));
         out.push_str(&format!(" }}):{}()", fu));
         out
     }

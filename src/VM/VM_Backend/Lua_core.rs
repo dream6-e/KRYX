@@ -12,14 +12,14 @@ pub fn build_vm_core() -> String {
     core.push_str("local function O(P, Q, R)\n");
     core.push_str("local S, T, U, r, K, V, W, X, Y, Z = {}, 1, 1, 0.9, Q, nil, nil, nil, nil, nil;\n");
     core.push_str("while T <= #P do\n");
-    core.push_str("V, W = string.byte(P, T, T), K[U];\n");
+    core.push_str("V, W = string_byte(P, T, T), K[U];\n");
     core.push_str("Y = (T * 13) % 256; Z = (W + Y) % 256;\n");
     core.push_str("X = (function(a, b) return E({a, b}, 1, 2) end)(V, Z);\n");
-    core.push_str("if math.random() < r then S[T] = string.char(X) else S[T] = string.char(X) end;\n");
+    core.push_str("if math_random() < r then S[T] = string_char(X) else S[T] = string_char(X) end;\n");
     core.push_str("K[U] = (K[U] + V + Y + 7) % 256;\n");
     core.push_str("K[U] = (K[U] * 5 + 1) % 256;\n");
     core.push_str("T, U = T + 1, (U % #Q) + 1;\n");
     core.push_str("end\n");
-    core.push_str("return table.concat(S) end\n");
+    core.push_str("return table_concat(S) end\n");
     core
 }

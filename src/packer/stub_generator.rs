@@ -28,6 +28,22 @@ impl StubGenerator {
         let f_concat = pool.get();
         let f_gsub = pool.get();
         let f_remove = pool.get();
+
+        // 外层 return ({...}) 壳：内建函数作为壳字段一次性解析，正文只通过壳引用
+        let v_wrap = pool.get();
+        let sh = pool.get();
+        let r_lf = pool.get();
+        let r_pc = pool.get();
+        let r_er = pool.get();
+        let r_ty = pool.get();
+        let r_ch = pool.get();
+        let r_by = pool.get();
+        let r_fl = pool.get();
+        let r_rnd = pool.get();
+        let r_cat = pool.get();
+        let r_tn = pool.get();
+        let r_gs = pool.get();
+        let r_rem = pool.get();
         
         let p_pc = pool.get();
         let p_insts = pool.get();
@@ -275,15 +291,28 @@ impl StubGenerator {
         k_str.push('}');
 
         format!("
-return (function(...)
-    local {f_load}=function(c) local f;if not(f) then return (loadstring or load)(c) else return {{}} end;end
-    local {f_pcall}=function(r) local c,v=3,type;if v(c)==\"string\" then return error(r) else return pcall(r) end;end
-    local {f_char}=function(...) return string.char(...) end
-    local {f_byte} = function(...) local k,g=3.0,0x0;local ui=k+g;if ui < k-g then return math.floor(...) elseif ui==k-g then return string.byte(...) end;end
-    local {f_floor} = function(x) return math.floor(x) end
-    local {f_concat} = function(t, sep) local fg=function(sd,qw) if true then return math.random(sd,qw) end end;local ty,zx,nm=0x1,5,0x14; if fg(ty,zx) <= fg(zx,nm) then return table.concat(t, sep) else return tonumber(t,sep) end;end
-    local {f_gsub} = function(s, p, r) return string.gsub(s, p, r) end
-    local {f_remove} = function(t, pos) return table.remove(t, pos) end
+return ({{
+    {r_lf} = loadstring or load,
+    {r_pc} = pcall,
+    {r_er} = error,
+    {r_ty} = type,
+    {r_ch} = string.char,
+    {r_by} = string.byte,
+    {r_fl} = math.floor,
+    {r_rnd} = math.random,
+    {r_cat} = table.concat,
+    {r_tn} = tonumber,
+    {r_gs} = string.gsub,
+    {r_rem} = table.remove,
+    {v_wrap} = function({sh}, ...)
+    local {f_load}=function(c) local f;if not(f) then return {sh}.{r_lf}(c) else return {{}} end;end
+    local {f_pcall}=function(r) local c,v=3,{sh}.{r_ty};if v(c)==\"string\" then return {sh}.{r_er}(r) else return {sh}.{r_pc}(r) end;end
+    local {f_char}=function(...) return {sh}.{r_ch}(...) end
+    local {f_byte} = function(...) local k,g=3.0,0x0;local ui=k+g;if ui < k-g then return {sh}.{r_fl}(...) elseif ui==k-g then return {sh}.{r_by}(...) end;end
+    local {f_floor} = function(x) return {sh}.{r_fl}(x) end
+    local {f_concat} = function(t, sep) local fg=function(sd,qw) if true then return {sh}.{r_rnd}(sd,qw) end end;local ty,zx,nm=0x1,5,0x14; if fg(ty,zx) <= fg(zx,nm) then return {sh}.{r_cat}(t, sep) else return {sh}.{r_tn}(t,sep) end;end
+    local {f_gsub} = function(s, p, r) return {sh}.{r_gs}(s, p, r) end
+    local {f_remove} = function(t, pos) return {sh}.{r_rem}(t, pos) end
     local function {v_entry}({v_data}, ...)
         local {v_q} = {{
             {m_bxor} = function({v_q}, {v_s}, {v_a}, {v_b})
@@ -340,9 +369,11 @@ return (function(...)
         return {v_q}.{m_main}({v_q}, {v_data}, ...)
     end
     return {v_entry}([=[{payload}]=], ...)
-end)(...)
+    end
+}}):{v_wrap}(...)
 ",
         f_load=f_load, f_pcall=f_pcall, f_char=f_char, f_byte=f_byte, f_floor=f_floor, f_concat=f_concat, f_gsub=f_gsub, f_remove=f_remove,
+        sh=sh, r_lf=r_lf, r_pc=r_pc, r_er=r_er, r_ty=r_ty, r_ch=r_ch, r_by=r_by, r_fl=r_fl, r_rnd=r_rnd, r_cat=r_cat, r_tn=r_tn, r_gs=r_gs, r_rem=r_rem, v_wrap=v_wrap,
         v_entry=v_entry, v_data=v_data, v_q=v_q, m_bxor=m_bxor, v_s=v_s, v_a=v_a, v_b=v_b, m_bxor_body=m_bxor_body, m_next=m_next,
         m_next_body=m_next_body, m_init_map=m_init_map, m_init_map_body=m_init_map_body, m_init_insts=m_init_insts,
         m_init_insts_body=m_init_insts_body, m_init_handlers=m_init_handlers, m_init_handlers_body=m_init_handlers_body,

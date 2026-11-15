@@ -86,7 +86,7 @@ pub fn generate_split(use_debug: bool, key_var: &str) -> AntiTamperResult {
     setup.push_str(&format!("local {} = {{{}}};\n", v_pool, pool_data));
     setup.push_str(&format!(
         "local function {}(h) \
-             local la,lk=false,string.char;local e = {}[h]; if not e then return la or nil end; \
+             local la,lk=false,string_char;local e = {}[h]; if not e then return la or nil end; \
              local sr=la or lk;local s = ''; \
              for i=1, #e do s = s .. sr((e[i] + 256 - {}) % 256) end; \
              return not la and s; \
@@ -177,7 +177,7 @@ pub fn generate_split(use_debug: bool, key_var: &str) -> AntiTamperResult {
                          else \
                              local ok, h = p(gh); \
                              if not ok then {} else \
-                             local c = 0; local ok2 = p(sh, function() c=c+1 end, string.char(99)); \
+                             local c = 0; local ok2 = p(sh, function() c=c+1 end, string_char(99)); \
                              if not ok2 then {} else \
                              local function tmp() end; tmp(); p(sh); \
                              if c < 1 then {} else {} end end end end end\n",
@@ -210,7 +210,7 @@ pub fn generate_split(use_debug: bool, key_var: &str) -> AntiTamperResult {
                              local ok, inf = p(gi, p); \
                              if not ok or type(inf)~='table' then {} else \
                              local w=inf.what; local h=5381; \
-                             for idx=1,#w do h=(h*33+string.byte(w,idx))%4294967296 end; \
+                             for idx=1,#w do h=(h*33+string_byte(w,idx))%4294967296 end; \
                              if h~={} then {} else {} end end end end\n",
                         v_res, hash_debug, v_res, hash_pcall,
                         next_bad,

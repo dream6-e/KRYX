@@ -282,6 +282,19 @@ impl Packer {
         let m_run = rng.name();
         let m_main = rng.name();
 
+        // 壳字段：全部内建函数/位运算兜底作为 return ({...}) 壳的字段携带，
+        // 正文只通过壳（q）引用，不直接出现 unpack/math.floor 等全局引用。
+        let k_un = rng.name();
+        let k_ch = rng.name();
+        let k_by = rng.name();
+        let k_fl = rng.name();
+        let k_ins = rng.name();
+        let k_cat = rng.name();
+        let k_rem = rng.name();
+        let k_rev = rng.name();
+        let k_lf = rng.name();
+        let k_gm = rng.name();
+
         let op_state0 = rng.range(100, 200);
         let op_state1 = rng.range(201, 300);
         let op_state2 = rng.range(301, 400);
@@ -577,7 +590,8 @@ end,
         {m_run} = function(q, s)
             {router_code}
         end,
-        {m_main} = function(q, data, unpack, char, byte, floor, insert, concat, remove, reverse, sub, load_func, gmatch)
+        {m_main} = function(q, data)
+            local insert, load_func, gmatch = q.{k_ins}, q.{k_lf}, q.{k_gm};
             return (function(s)
                 q:{m_init_map}(s);
                 q:{m_init_insts}(s);
@@ -611,11 +625,12 @@ end,
                 data = data, pc = {pc_state0}, insts = {{}}, tamper = {tamper_val}, handlers = {{}},
                 r_flg = false, r_vals = {{}}, r_len = 0, tail_flg = false,
                 map = {{}}, idx = 1, len = #data, k = {{}}, kidx = 0, buf = {{}}, memo = {{}},
-                unpack = unpack, char = char, byte = byte, floor = floor, insert = insert, concat = concat, remove = remove, reverse = reverse,
+                unpack = q.{k_un}, char = q.{k_ch}, byte = q.{k_by}, floor = q.{k_fl}, insert = q.{k_ins}, concat = q.{k_cat}, remove = q.{k_rem}, reverse = q.{k_rev},
                 bc = 0, res = {{}}, f = 0, p1 = 0, p2 = 0, w = 0, u = 0, ptr = 0
             }});
         end
-    }}):{m_main}({v_data}, unpack or table.unpack, string.char, string.byte, math.floor, table.insert, table.concat, table.remove, string.reverse, string.sub, loadstring or load, string.gmatch);
+    , {k_un} = unpack or table.unpack, {k_ch} = string.char, {k_by} = string.byte, {k_fl} = math.floor, {k_ins} = table.insert, {k_cat} = table.concat, {k_rem} = table.remove, {k_rev} = string.reverse, {k_lf} = loadstring or load, {k_gm} = string.gmatch
+    }}):{m_main}({v_data});
 end
 ");
         (script, f_entry)

@@ -126,9 +126,7 @@ impl ControlFlowBuilder {
 
         let mut out = String::new();
 
-        out.push_str(&format!("local {}={};", fn_bx, "bit32 and bit32.bxor or bit and bit.bxor or function(a,b)local r,p=0,1;while a>0 or b>0 do local ra,rb=a%2,b%2;if ra~=rb then r=r+p end;a,b,p=math.floor(a/2),math.floor(b/2),p*2 end;return r end"));
-        out.push_str(&format!("local {}={};", fn_ba, "bit32 and bit32.band or bit and bit.band or function(a,b)local r,p=0,1;while a>0 and b>0 do local ra,rb=a%2,b%2;if ra==1 and rb==1 then r=r+p end;a,b,p=math.floor(a/2),math.floor(b/2),p*2 end;return r end"));
-        out.push_str(&format!("local {}={};", fn_bs, "bit32 and bit32.rshift or bit and bit.rshift or function(a,n)return math.floor(a/(2^n))end"));
+        out.push_str(&format!("local {}=bxor_fn;local {}=band_fn;local {}=rshift_fn;", fn_bx, fn_ba, fn_bs));
         
         let tbl_def = format!(
             "local {p}={{}};{p}[{g1}]={{}};{p}[{g1}][{bx}]={fbx};{p}[{g1}][{add}]=function(a,b)return a+b end;{p}[{g1}][{ba}]={fba};{p}[{g2}]={{}};{p}[{g2}][{ba2}]=function(a)return {fba}(a,{max_u32})end;{p}[{g2}][{bs2}]=function(a)return {fbs}(a,{one})end;",
@@ -199,7 +197,7 @@ impl ControlFlowBuilder {
         ));
         
         out.push_str("else ");
-        out.push_str(&format!("if {} then if {} then {},{}=false,false;{}={};else return(unpack or table.unpack)({},{},{})end else {}={};end ", 
+        out.push_str(&format!("if {} then if {} then {},{}=false,false;{}={};else return unpack({},{},{})end else {}={};end ", 
             var_r_flg, var_tail_flg, var_tail_flg, var_r_flg, var_t, Self::obfuscate_num_depth(fetch_state, 1, &keys, rng), var_r_vals, Self::format_num(1, rng), var_r_len, var_t, Self::obfuscate_num_depth(fetch_state, 1, &keys, rng)
         ));
 
