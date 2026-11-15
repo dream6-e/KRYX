@@ -230,6 +230,8 @@ impl CodegenContext {
                 | "table"
                 | "utf8"
                 | "bit32"
+                | "bit"
+                | "getgenv"
                 | "_ENV"
                 | "game"
                 | "workspace"

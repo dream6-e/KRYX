@@ -9,7 +9,7 @@ pub struct Renamer {
 impl Renamer {
     pub fn new() -> Self {
         let safe_globals: HashSet<String> = [
-            "print", "math", "string", "table", "coroutine", "debug", "os", "io", "utf8", "bit32",
+            "print", "math", "string", "table", "coroutine", "debug", "os", "io", "utf8", "bit32", "bit",
             "getmetatable", "setmetatable", "tonumber", "tostring", "type", "unpack",
             "select", "pcall", "xpcall", "error", "assert", "require", "module",
             "getfenv", "setfenv", "ipairs", "pairs", "next", "rawget", "rawset",
