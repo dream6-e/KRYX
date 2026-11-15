@@ -4,16 +4,14 @@
 //! Luau 词法分析器把 `[0-9._]+[A-Za-z0-9_]*` 当作同一个 number token，
 //! 且解析前会先剥离所有的 `_`（见 vendor/luau-0.735/Ast/src/Parser.cpp 的 parseNumber）。
 //! 因此 `_` 可以合法出现在数字的任意位置（`0b_01`、`0b0_1`、`0b01_` 都可以），
-//! `b`/`B` 大小写随机，`_` 位置每次随机。
+//! `b`/`B` 大小写随机；每个字面量最多 2 个 `_`（0/1/2 随机），位置随机且不重复。
 //! 注意：数字后紧跟 `[A-Za-z0-9_]` 会被并入同一个 token，调用方必须保证数字后有 `)`、`]`、
 //! `,`、`;`、空白等分隔符（当前所有调用点均满足；见 VM 中 format_num 的使用位置）。
 
 use rand::Rng;
 
-const UNDERSCORE_PROB_PERCENT: u8 = 35;
-
 /// 生成随机的二进制数字字面量：前缀 `0b`/`0B`（大小写随机），
-/// 每个字符间隙（含 `0` 与前缀之间、前缀之后、bit 之间）以及末尾都以固定概率插入 `_`。
+/// 每个字面量最多 2 个 `_`（0/1/2 个随机），位置随机分布（前缀之后的任意间隙或末尾，不重复）。
 /// 返回值不含符号，`val` 由调用方先取绝对值。
 pub(crate) fn random_binary_literal(val: u64) -> String {
     let body = format!("{:b}", val);
@@ -25,16 +23,29 @@ pub(crate) fn random_binary_literal(val: u64) -> String {
     s.push(if rng.random::<bool>() { 'b' } else { 'B' });
     s.push_str(&body);
 
-    let mut out = String::with_capacity(s.len() + 8);
+    // 候选插入位置：s 下标 2..=s.len()（插入到该字符之前；== s.len() 表示末尾）。
+    // 注意不含 s 下标 1（b/B 前缀字符），即不允许在 '0' 与前缀之间插入 '_'
+    //（"0_b1010" Lua 能解析，但 compressor 的极简 lexer 不认，且没有必要保留）。
+    let s_len = s.len();
+    let mut gaps: Vec<usize> = (2..=s_len).collect();
+
+    // 每个字面量最多 2 个 '_'，个数 0/1/2 均匀随机
+    let want = rng.random_range(0..=2usize).min(gaps.len());
+    // 局部 Fisher-Yates，随机选出 want 个不重复位置
+    for i in 0..want {
+        let j = rng.random_range(i..gaps.len());
+        gaps.swap(i, j);
+    }
+    let chosen = &gaps[..want];
+
+    let mut out = String::with_capacity(s.len() + want);
     for (i, c) in s.chars().enumerate() {
-        // i == 1 是 b/B 前缀字符本身：不允许在 '0' 与前缀之间插入 '_'
-        //（"0_b1010" Lua 能解析，但 compressor 的极简 lexer 不认，且没有必要保留）
-        if i > 1 && rng.random_range(0..100u8) < UNDERSCORE_PROB_PERCENT {
+        if chosen.contains(&i) {
             out.push('_');
         }
         out.push(c);
     }
-    if rng.random_range(0..100u8) < UNDERSCORE_PROB_PERCENT {
+    if chosen.contains(&s_len) {
         out.push('_');
     }
     out
@@ -62,6 +73,8 @@ mod tests {
                 assert_eq!(parsed, v, "去 _ 解析结果不一致: {lit}");
                 assert!(lit.chars().all(|c| c == '0' || c == '1' || c == '_' || c == 'b' || c == 'B'),
                     "字面量含非法字符: {lit}");
+                assert!(lit.chars().filter(|&c| c == '_').count() <= 2,
+                    "字面量 _ 数量超过 2 个: {lit}");
             }
         }
     }
