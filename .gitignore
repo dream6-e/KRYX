@@ -1,0 +1,16 @@
+# Rust 构建产物（约 600 MB）
+/target/
+
+# 通过 OBF_RUST_PREFIX=$PWD/.toolchains/... 安装的本地工具链
+/.toolchains/
+
+# 在仓库根目录运行混淆器时产生的产物（examples/ 下的示例是有意提交的）
+/obfuscated.lua
+/process/
+
+# 以下为有意不公开的本地文件（作弊 payload，不随仓库分发）
+/伪装.lua
+/test/Katchi.lua
+
+# 原始快照压缩包（含不公开内容，留本地即可）
+/KRYX.zip
