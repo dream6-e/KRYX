@@ -4,49 +4,58 @@ use super::ast::{Block, LastStmt, Stmt, Expr, PrefixExpr, Var, Call, LocalVar, V
 
 pub struct ScopeResolver {
     scopes: Vec<HashMap<String, VarId>>,
-    scope_var_counts: Vec<usize>,
     next_id: usize,
-    pub var_alloc: HashMap<VarId, usize>,
     pub var_usage: HashMap<VarId, usize>,
+    /// VarId -> (def_pos, last_use_pos)，供活跃区间染色（不同作用域复用变量名）
+    pub intervals: HashMap<VarId, (usize, usize)>,
+    /// 每个函数的参数 VarId 列表（按声明顺序），供随机参数覆盖使用
+    pub param_lists: Vec<Vec<VarId>>,
+    pos: usize,
 }
 
 impl ScopeResolver {
     pub fn new() -> Self {
         Self {
             scopes: vec![HashMap::new()],
-            scope_var_counts: vec![0],
             next_id: 1,
-            var_alloc: HashMap::new(),
             var_usage: HashMap::new(),
+            intervals: HashMap::new(),
+            param_lists: Vec::new(),
+            pos: 0,
         }
     }
 
     pub fn enter_scope(&mut self) {
         self.scopes.push(HashMap::new());
-        self.scope_var_counts.push(0);
     }
 
     pub fn exit_scope(&mut self) {
         self.scopes.pop();
-        self.scope_var_counts.pop();
+    }
+
+    #[inline]
+    fn tick(&mut self) -> usize {
+        self.pos += 1;
+        self.pos
     }
 
     pub fn declare_local(&mut self, name: &str) -> VarId {
         let id = VarId(self.next_id);
         self.next_id += 1;
-        
-        let active_vars: usize = self.scope_var_counts.iter().sum();
-        self.var_alloc.insert(id, active_vars);
+
+        let def = self.tick();
+        self.intervals.insert(id, (def, def));
         self.var_usage.insert(id, 0);
-        
-        if let Some(count) = self.scope_var_counts.last_mut() {
-            *count += 1;
-        }
 
         if let Some(current) = self.scopes.last_mut() {
             current.insert(name.to_string(), id);
         }
         id
+    }
+
+    /// 记录一组参数（函数声明/函数表达式），供 rename 阶段做随机参数覆盖
+    pub fn note_param_list(&mut self, params: &[LocalVar]) {
+        self.param_lists.push(params.iter().map(|p| p.id).collect());
     }
 
     pub fn resolve_var(&self, name: &str) -> Option<VarId> {
@@ -59,6 +68,12 @@ impl ScopeResolver {
     }
 
     pub fn record_usage(&mut self, id: VarId) {
+        let use_pos = self.tick();
+        if let Some(interval) = self.intervals.get_mut(&id) {
+            if use_pos > interval.1 {
+                interval.1 = use_pos;
+            }
+        }
         if let Some(count) = self.var_usage.get_mut(&id) {
             *count += 1;
         }
@@ -166,18 +181,20 @@ impl Stmt {
             }
             Stmt::Function { path: _, method: _, params, is_vararg: _, block } => {
                 r.enter_scope();
-                for p in params {
+                for p in params.iter_mut() {
                     p.id = r.declare_local(&p.name);
                 }
+                r.note_param_list(params);
                 block.resolve_no_scope_bracket(r);
                 r.exit_scope();
             }
             Stmt::LocalFunction { var, params, is_vararg: _, block } => {
                 var.id = r.declare_local(&var.name);
                 r.enter_scope();
-                for p in params {
+                for p in params.iter_mut() {
                     p.id = r.declare_local(&p.name);
                 }
+                r.note_param_list(params);
                 block.resolve_no_scope_bracket(r);
                 r.exit_scope();
             }
@@ -199,9 +216,10 @@ impl Expr {
             Expr::Nil | Expr::Boolean(_) | Expr::Number(_) | Expr::String(_) | Expr::Vararg => {}
             Expr::FuncDef(params, _, block) => {
                 r.enter_scope();
-                for p in params {
+                for p in params.iter_mut() {
                     p.id = r.declare_local(&p.name);
                 }
+                r.note_param_list(params);
                 block.resolve_no_scope_bracket(r);
                 r.exit_scope();
             }
