@@ -21,6 +21,7 @@ use kryvex_ob::VM::VM_Backend::Generator::Generator;
 use kryvex_ob::compressor::Compressor;
 use kryvex_ob::VM::RadixSieve;
 use kryvex_ob::packer;
+use kryvex_ob::parenwrap;
 
 fn main() {
     let start_time = Instant::now();
@@ -156,6 +157,8 @@ fn main() {
     processed_vm
 )
             };
+
+            let final_code = parenwrap::wrap_misc(&final_code);
 
             let mut file = match std::fs::File::create("obfuscated.lua") {
                 Ok(f) => f,

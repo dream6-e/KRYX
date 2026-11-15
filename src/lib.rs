@@ -18,3 +18,4 @@ pub mod VM;
 
 pub mod compressor;
 pub mod packer;
+pub mod parenwrap;
