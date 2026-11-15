@@ -72,7 +72,7 @@ pub struct ControlFlowBuilder;
 
 impl ControlFlowBuilder {
     pub fn format_num(val: i64, rng: &mut GenRng) -> String {
-        match rng.range(0, 2) {
+        match rng.range(0, 3) {
             0 => {
                 if val < 0 {
                     format!("-0x{:x}", val.unsigned_abs())
@@ -80,7 +80,11 @@ impl ControlFlowBuilder {
                     format!("0x{:x}", val)
                 }
             }
-            _ => val.to_string(),
+            1 => val.to_string(),
+            _ => {
+                let lit = crate::VM::numlit::random_binary_literal(val.unsigned_abs());
+                if val < 0 { format!("-{lit}") } else { lit }
+            }
         }
     }
 
@@ -587,7 +591,11 @@ impl GenRng {
         for i in (1..slice.len()).rev() { slice.swap(i, r.random_range(0..=i)); }
     }
     pub fn format_num(&mut self, val: i64) -> String {
-        match self.range(0, 2) { 0 => { if val < 0 { format!("-0x{:x}", val.unsigned_abs()) } else { format!("0x{:x}", val) } } _ => val.to_string() }
+        match self.range(0, 3) {
+            0 => { if val < 0 { format!("-0x{:x}", val.unsigned_abs()) } else { format!("0x{:x}", val) } }
+            1 => val.to_string(),
+            _ => { let lit = crate::VM::numlit::random_binary_literal(val.unsigned_abs()); if val < 0 { format!("-{lit}") } else { lit } }
+        }
     }
     pub fn obfuscate_num(&mut self, val: i64, depth: usize, keys: &CipherKeys) -> String {
         if depth == 0 { return self.format_num(val); }

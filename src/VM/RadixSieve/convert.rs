@@ -21,6 +21,13 @@ fn convert_number_complex(num_str: &str, num_type: usize, rng: &mut impl Rng) ->
             let zeros = "0".repeat(rng.gen_range(3..5));
             format!("0x{}{:X}", zeros, num)
         }
+        3 => {
+            if num < 0 {
+                format!("-{}", crate::VM::numlit::random_binary_literal(num.unsigned_abs()))
+            } else {
+                crate::VM::numlit::random_binary_literal(num as u64)
+            }
+        }
         _ => num_str.to_string(),
     }
 }
@@ -205,7 +212,7 @@ pub fn apply_radix_sieve(code: &str, _version: Option<super::detect::LuaVersion>
     let sample_size = (total as f64 * 0.40) as usize;
 
     for (i, &idx) in indices.iter().take(sample_size).enumerate() {
-        type_assignments[idx] = Some(i % 3);
+        type_assignments[idx] = Some(i % 4);
     }
 
     let mut replacements = Vec::new();

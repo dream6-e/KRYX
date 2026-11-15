@@ -157,7 +157,12 @@ impl<'a> Lexer<'a> {
                 let start = i;
                 if chars[i] == '0' && i + 1 < len && (chars[i + 1] == 'x' || chars[i + 1] == 'X') {
                     i += 2;
-                    while i < len && chars[i].is_ascii_hexdigit() {
+                    while i < len && (chars[i].is_ascii_hexdigit() || chars[i] == '_') {
+                        i += 1;
+                    }
+                } else if chars[i] == '0' && i + 1 < len && (chars[i + 1] == 'b' || chars[i + 1] == 'B') {
+                    i += 2;
+                    while i < len && (chars[i] == '0' || chars[i] == '1' || chars[i] == '_') {
                         i += 1;
                     }
                 } else {
@@ -202,5 +207,50 @@ impl<'a> Lexer<'a> {
         }
 
         tokens
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::super::packer::Packer;
+    use super::super::token::TokenType;
+    use super::Lexer;
+
+    fn texts(code: &str) -> Vec<(String, TokenType)> {
+        Lexer::new(code).tokenize().into_iter().map(|t| (t.text, t.token_type)).collect()
+    }
+
+    #[test]
+    fn lexes_luau_binary_literals() {
+        for lit in ["0b0101", "0B0101", "0b_0101", "0B_01", "0b0101_", "0b1_0_1", "0b_0_1_0_1_"] {
+            let toks = texts(lit);
+            assert_eq!(toks.len(), 1, "{lit} 应为单个 token，实际: {toks:?}");
+            assert_eq!(toks[0].1, TokenType::Number, "{lit} 应为 Number");
+            assert_eq!(toks[0].0, lit);
+        }
+    }
+
+    #[test]
+    fn binary_literal_keeps_value_and_bounds() {
+        let toks = texts("x = 0b1010_ + 1");
+        let joined = toks.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join("|");
+        assert!(joined.starts_with("x|"), "实际: {joined}");
+        assert!(toks.iter().any(|t| t.0 == "0b1010_" && t.1 == TokenType::Number));
+    }
+
+    #[test]
+    fn hex_literal_allows_underscores() {
+        let toks = texts("0x1F_A0");
+        assert_eq!(toks.len(), 1);
+        assert_eq!(toks[0].0, "0x1F_A0");
+        assert_eq!(toks[0].1, TokenType::Number);
+    }
+
+    #[test]
+    fn packed_number_is_separated_from_identifier() {
+        for lit in ["0b0101_", "0b0101"] {
+            let code = format!("{lit} then");
+            let packed = Packer::pack(Lexer::new(&code).tokenize());
+            assert!(packed.starts_with(&format!("{lit} ")), "Number 与后续 token 必须有分隔符: {packed:?}");
+        }
     }
 }

@@ -4,6 +4,7 @@ pub mod Opcodes;
 pub mod VM_Backend;
 pub mod packer;
 pub mod RadixSieve;
+pub(crate) mod numlit;
 
 pub use VM_Backend::Context;
 pub use VM_Backend::Serializer;

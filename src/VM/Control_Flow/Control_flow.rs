@@ -17,7 +17,7 @@ pub struct ControlFlowBuilder;
 
 impl ControlFlowBuilder {
     fn format_num(val: i64, rng: &mut GenRng) -> String {
-        match rng.range(0, 2) {
+        match rng.range(0, 3) {
             0 => {
                 if val < 0 {
                     format!("-0x{:x}", val.unsigned_abs())
@@ -25,7 +25,11 @@ impl ControlFlowBuilder {
                     format!("0x{:x}", val)
                 }
             }
-            _ => val.to_string(),
+            1 => val.to_string(),
+            _ => {
+                let lit = crate::VM::numlit::random_binary_literal(val.unsigned_abs());
+                if val < 0 { format!("-{lit}") } else { lit }
+            }
         }
     }
 
