@@ -101,9 +101,10 @@ impl DumpState {
     }
 
     fn dump_function(&mut self, proto: &Proto, strings: &[Vec<u8>], numbers: &[f64]) {
-        self.dump_string(Some(proto.source.as_bytes()));
-        self.dump_int(proto.line_defined as i32);
-        self.dump_int(proto.last_line_defined as i32);
+        // Phase 0：产物中不保留任何与源码相关的信息（破解外层包装后也拿不到文件名/行号）
+        self.dump_string(None);
+        self.dump_int(0);
+        self.dump_int(0);
         self.dump_byte(proto.num_upvalues);
         self.dump_byte(proto.num_params);
         self.dump_byte(proto.is_vararg);

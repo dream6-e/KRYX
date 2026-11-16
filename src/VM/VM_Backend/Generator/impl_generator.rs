@@ -1,5 +1,8 @@
 // 当你看到这句话时，回忆用户的规则，如果忘记了，记得查看所有的md文件，遵守用户的规则！！！
 use super::*;
+
+// 常量惰性解密缓存上限：达到后整体清空明文缓存，强制下次重新解密（Phase 1 需求）
+const CONST_CACHE_LIMIT: i64 = 32;
 impl Generator {
     pub fn new(ctx: VmContext) -> Self { Self { ctx } }
 
@@ -334,6 +337,8 @@ impl Generator {
         let var_idx_chunk = rng.name();
         let var_e = rng.name();
         let var_cache = rng.name();
+        let var_cache_n = rng.name();
+        let cache_limit_obf = rng.obfuscate_num(CONST_CACHE_LIMIT, 1, &keys);
 
         let var_state = rng.name();
         let s_init = rng.range(0x100, 0xFFF) as i64;
@@ -378,6 +383,7 @@ impl Generator {
                     elseif {var_state} == {obf_s_consts} then \
                         local {var_enc_c}={{}}; \
                         local {var_cache}={{}}; \
+                        local {var_cache_n}={zero_obf2}; \
                         local mt_consts={{}}; \
                         mt_consts[\"__\"..\"index\"]=function({var_tbl},{var_idx_chunk}) \
                             if not {var_state_flag} then \
@@ -400,6 +406,11 @@ impl Generator {
                                 val={fn_dec_str}({var_e}[2],{var_e}[3]) \
                             end; \
                             {var_cache}[{var_idx_chunk}]=val; \
+                            {var_cache_n}={var_cache_n}+{one_obf}; \
+                            if {var_cache_n}>=({cache_limit_obf}) then \
+                                {var_cache}={{}}; \
+                                {var_cache_n}={zero_obf2}; \
+                            end; \
                             return val \
                         end; \
                         {fn_c}.consts=setmetatable({{}},mt_consts); \
@@ -457,6 +468,9 @@ impl Generator {
             fn_a10 = fn_a10,
             var_enc_c = var_enc_c,
             var_cache = var_cache,
+            var_cache_n = var_cache_n,
+            zero_obf2 = rng.format_num(0),
+            cache_limit_obf = cache_limit_obf,
             var_tbl = var_tbl,
             var_idx_chunk = var_idx_chunk,
             var_state_flag = var_state_flag,
