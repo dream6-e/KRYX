@@ -24,6 +24,10 @@ impl Generator {
         for i in 0..90 { inverse_opcode_map[self.ctx.opcode_map[i] as usize] = i as u8; }
         let builtin_slot_perm = Opcodes::builtins::slot_permutation(self.ctx.seed);
         { let mut sg_reader = PayloadReader { data: payload, pos: 0 }; scan_setglobal_targets(&mut sg_reader, &mut setglobal_targets, setglobal_op); }
+        let setglobalstr_op = self.ctx.opcode_map[57];
+        let mut global_refcounts: std::collections::HashMap<Vec<u8>, u32> = std::collections::HashMap::new();
+        { let mut gr_reader = PayloadReader { data: payload, pos: 0 }; scan_global_refs(&mut gr_reader, &mut global_refcounts, [getglobal_op, getglobalstr_op, setglobal_op, setglobalstr_op]); }
+        let mut global_ctx = GlobalSlotCtx { refcounts: global_refcounts, by_name: std::collections::HashMap::new(), used_slots: std::collections::HashSet::new(), getglobal_op, getglobalstr_op, setglobal_op, setglobalstr_op };
 
         let mut mapped_opcodes: [Vec<u32>; Opcodes::builtins::TOTAL_OPCODES] = std::array::from_fn(|_| Vec::new());
         let mut transpile_map: [Vec<u32>; 90] = std::array::from_fn(|_| Vec::new());
@@ -54,13 +58,24 @@ impl Generator {
         let mut strings = Vec::new(); let mut numbers = Vec::new(); let mut rewritten_chunks = Vec::new();
         let mut reader = PayloadReader { data: payload, pos: 0 };
         let mut rewrite_rng = StdRng::seed_from_u64(self.ctx.seed + 1);
-        rewrite_chunk(&mut reader, &mut rewritten_chunks, &mut strings, &mut numbers, &transpile_map, &mapped_opcodes, &setglobal_targets, getglobal_op, getglobalstr_op, &inverse_opcode_map, &builtin_slot_perm, &mut rewrite_rng);
+        rewrite_chunk(&mut reader, &mut rewritten_chunks, &mut strings, &mut numbers, &transpile_map, &mapped_opcodes, &setglobal_targets, &mut global_ctx, &inverse_opcode_map, &builtin_slot_perm, &mut rewrite_rng);
 
         let mut builtin_pool_indices: Vec<usize> = Vec::with_capacity(Opcodes::builtins::BUILTIN_NAMES.len());
         for name in Opcodes::builtins::BUILTIN_NAMES.iter() {
             let nb = name.as_bytes().to_vec();
             let pos = strings.iter().position(|x| x == &nb).unwrap_or_else(|| { strings.push(nb); strings.len() - 1 });
             builtin_pool_indices.push(pos);
+        }
+        // Phase 3：槽位化全局名同样强制进池（仅被启动期解密一次，密文条目本身无任何区分标记）
+        let mut global_boot: Vec<(usize, Vec<u64>)> = Vec::with_capacity(global_ctx.by_name.len()); // (raw pool 索引, 别名槽位)
+        {
+            let mut v: Vec<(&Vec<u8>, &GlobalSlotInfo)> = global_ctx.by_name.iter().collect();
+            v.sort_by(|a, b| a.0.cmp(b.0));
+            for (name, info) in v {
+                let nb = name.clone();
+                let pos = strings.iter().position(|x| x == &nb).unwrap_or_else(|| { strings.push(nb.clone()); strings.len() - 1 });
+                global_boot.push((pos, info.aliases.clone()));
+            }
         }
 
         // 最外层 return ({ ... }) 壳：全部内建函数作为壳字段一次性解析，
@@ -167,7 +182,8 @@ impl Generator {
         
         let (payload_str, decoder_script, entry_func) = Packer::pack(&combined_payload, &mut rng);
         let var_junk = rng.name(); let var_vc = rng.name(); let var_builtin_reg = rng.name();
-        let block_packer_vars = format!("local {}, {}, {}; ", var_junk, var_vc, var_builtin_reg);
+        let gget = rng.name(); let gset = rng.name();
+        let block_packer_vars = format!("local {}, {}, {}, {}, {}; ", var_junk, var_vc, var_builtin_reg, gget, gset);
 
         let fn_execute = "execute";
         let var_pc = rng.name();
@@ -197,7 +213,7 @@ impl Generator {
         block_execute_def.push_str(&format!("local inst_C = {}[{}]; ", var_c_arr, var_pc));
         block_execute_def.push_str(&format!("{} = {} + 1; ", var_pc, var_pc));
         
-        let cfg = OpcodeConfig { pc: var_pc.clone(), stk: var_stk.clone(), consts: "chunk.consts".to_string(), top: var_top.clone(), insts: var_insts.clone(), inst: var_inst.clone(), upvals: "upvals".to_string(), env: "env".to_string(), protos: "chunk.protos".to_string(), handlers: String::new(), varargs: var_varargs.clone(), varargs_len: var_varargs_len.clone(), virtual_closures: var_vc.clone(), builtin_reg: var_builtin_reg.clone() };
+        let cfg = OpcodeConfig { pc: var_pc.clone(), stk: var_stk.clone(), consts: "chunk.consts".to_string(), top: var_top.clone(), insts: var_insts.clone(), inst: var_inst.clone(), upvals: "upvals".to_string(), env: "env".to_string(), protos: "chunk.protos".to_string(), handlers: String::new(), varargs: var_varargs.clone(), varargs_len: var_varargs_len.clone(), virtual_closures: var_vc.clone(), builtin_reg: var_builtin_reg.clone(), global_get: gget.clone(), global_set: gset.clone() };
         let mut raw_handlers = Opcodes::generate_handlers(&mapped_opcodes, &cfg, self.ctx.seed).replace("execute(", &format!("{}(", fn_execute));
         
         raw_handlers = raw_handlers.replace(
@@ -539,6 +555,28 @@ impl Generator {
             ));
             let _ = name;
         }
+        if !global_boot.is_empty() {
+            out.push_str(&format!(" {} = {{}}; {} = {{}}; ", gget, gset));
+            for (raw_idx, aliases) in &global_boot {
+                let lua_idx = raw_idx + 1;
+                out.push_str(&format!(
+                    "{}={}({}[{}],{}); ",
+                    var_bname, fn_dec_str, global_strings, lua_idx, raw_idx
+                ));
+                for slot in aliases {
+                    let alias_obf = rng.obfuscate_num(*slot as i64, 1, &keys);
+                    out.push_str(&format!(
+                        "{}[{}]=(function(nm) return function(e) local v=e[nm]; if v==nil and getgenv then v=getgenv()[nm] end; return v end end)({}); ",
+                        gget, alias_obf, var_bname
+                    ));
+                    out.push_str(&format!(
+                        "{}[{}]=(function(nm) return function(e, val) e[nm]=val; if getgenv then getgenv()[nm]=val end end end)({}); ",
+                        gset, alias_obf, var_bname
+                    ));
+                }
+            }
+        }
+
         let fu = rng.name();
         
         out.push_str(" ");

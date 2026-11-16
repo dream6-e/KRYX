@@ -15,7 +15,13 @@ pub const BUILTIN_NAMES: &[&str] = &[
 
 pub const BUILTIN_OP_BASE: usize = 90;
 pub const BUILTIN_OP_COUNT: usize = BUILTIN_NAMES.len();
-pub const TOTAL_OPCODES: usize = BUILTIN_OP_BASE + BUILTIN_OP_COUNT;
+/// Phase 3：全局槽位化 opcode 伪类型（GetGlobalSlot/SetGlobalSlot 的 opcode 组号基址）。
+/// 只出现在 Generator 产物中，不占用原始字节码 opcode 编号（原始编号 0..89）。
+pub const GLOBAL_SLOT_OP_BASE: usize = BUILTIN_OP_BASE + BUILTIN_OP_COUNT;
+pub const GLOBAL_SLOT_OP_COUNT: usize = 2;
+pub const GLOBAL_GET_SLOT: usize = GLOBAL_SLOT_OP_BASE;
+pub const GLOBAL_SET_SLOT: usize = GLOBAL_SLOT_OP_BASE + 1;
+pub const TOTAL_OPCODES: usize = BUILTIN_OP_BASE + BUILTIN_OP_COUNT + GLOBAL_SLOT_OP_COUNT;
 
 pub fn slot_permutation(seed: u64) -> Vec<usize> {
     let mut perm: Vec<usize> = (0..BUILTIN_NAMES.len()).collect();

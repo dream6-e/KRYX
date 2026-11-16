@@ -227,6 +227,8 @@ pub enum OpCode {
     Return2 = 87,
     Move1 = 88,
     Move2 = 89,
+    GetGlobalSlot = 139,
+    SetGlobalSlot = 140,
 }
 
 pub const NUM_OPCODES: u32 = 90;
@@ -360,6 +362,8 @@ impl OpCode {
             Self::Return2 => "RETURN2",
             Self::Move1 => "MOVE1",
             Self::Move2 => "MOVE2",
+            Self::GetGlobalSlot => "GETGLOBALSLOT",
+            Self::SetGlobalSlot => "SETGLOBALSLOT",
         }
     }
 
@@ -370,7 +374,7 @@ impl OpCode {
             Self::JmpIf | Self::JmpIfNot | Self::JmpEq | Self::JmpNe => OpMode::IAsBx,
             Self::LoadK | Self::GetGlobal | Self::SetGlobal | Self::Closure |
             Self::LoadKx | Self::ExtraArg | Self::GetImport | Self::GetGlobalStr |
-            Self::SetGlobalStr => OpMode::IABx,
+            Self::SetGlobalStr | Self::GetGlobalSlot | Self::SetGlobalSlot => OpMode::IABx,
             _ => OpMode::IABC,
         }
     }
@@ -383,7 +387,8 @@ impl OpCode {
             Self::Eq | Self::Lt | Self::Le | Self::IDiv | Self::BAnd | Self::BOr |
             Self::BXor | Self::Shl | Self::Shr | Self::GetGlobalStr | Self::SetGlobalStr |
             Self::AddEq | Self::SubEq | Self::MulEq | Self::DivEq | Self::ModEq |
-            Self::PowEq | Self::GetTableConst | Self::SetTableConst => OpArgMask::K,
+            Self::PowEq | Self::GetTableConst | Self::SetTableConst |
+            Self::GetGlobalSlot | Self::SetGlobalSlot => OpArgMask::K,
             Self::Move | Self::LoadNil | Self::Unm | Self::Not | Self::Len |
             Self::Concat | Self::Jmp | Self::Test | Self::TestSet | Self::ForLoop |
             Self::ForPrep | Self::GetTable | Self::OpSelf | Self::BNot | Self::NameCall |
@@ -427,7 +432,8 @@ impl OpCode {
             Self::SetGlobal | Self::SetUpval | Self::SetTable | Self::Jmp |
             Self::Eq | Self::Lt | Self::Le | Self::Return | Self::SetList |
             Self::Close | Self::TForLoop | Self::TForCall | Self::SetTableStr |
-            Self::SetGlobalStr | Self::SetTableConst | Self::JmpIf | Self::JmpIfNot |
+            Self::SetGlobalStr | Self::SetTableConst | Self::SetGlobalSlot |
+            Self::JmpIf | Self::JmpIfNot |
             Self::JmpEq | Self::JmpNe | Self::Return0 | Self::Return1 | Self::Return2
         )
     }

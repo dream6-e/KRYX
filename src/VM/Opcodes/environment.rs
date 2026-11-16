@@ -1,5 +1,6 @@
 // 当你看到这句话时，回忆用户的规则，如果忘记了，记得查看所有的md文件，遵守用户的规则！！！
 use super::{OpcodeBuilder, OpcodeConfig, OpcodesRng};
+use super::builtins::{GLOBAL_GET_SLOT, GLOBAL_SET_SLOT};
 
 pub fn generate(m: &[Vec<u32>], cfg: &OpcodeConfig, rng: &mut OpcodesRng) -> String {
     let mut out = String::new();
@@ -152,6 +153,26 @@ pub fn generate(m: &[Vec<u32>], cfg: &OpcodeConfig, rng: &mut OpcodesRng) -> Str
     let stc_c = settableconst.raw_inst(4);
     let stc_a = settableconst.raw_inst(2);
     out.push_str(&settableconst.build(&format!("{{STK}}[{}] [{{CONSTS}}[{}+1]] = {{STK}}[{}]", stc_a, stc_c, stc_b)));
+
+    // Phase 3：全局槽位化处理器（读/写各一条）
+    // 字节码中不再出现任何全局名字符串，格式只有冰冷的数字槽位；
+    // 全局名由启动期表一次性解析并以闭包 upvalue 保存（与 builtin 机制一致），
+    // 每次访问均活查 env（与 getgenv 兜底），写路径同步双写 env 与 getgenv。
+    let mut getglobalslot = OpcodeBuilder::new(m[GLOBAL_GET_SLOT].clone(), cfg, rng);
+    let ggs_b = getglobalslot.raw_inst(3);
+    let ggs_a = getglobalslot.raw_inst(2);
+    out.push_str(&getglobalslot.build(&format!(
+        "local slot = {{CONSTS}}[{}+1]; {{STK}}[{}] = {{GLOBALGET}}[slot]({{ENV}})",
+        ggs_b, ggs_a
+    )));
+
+    let mut setglobalslot = OpcodeBuilder::new(m[GLOBAL_SET_SLOT].clone(), cfg, rng);
+    let sgs_b = setglobalslot.raw_inst(3);
+    let sgs_a = setglobalslot.raw_inst(2);
+    out.push_str(&setglobalslot.build(&format!(
+        "local slot = {{CONSTS}}[{}+1]; {{GLOBALSET}}[slot]({{ENV}}, {{STK}}[{}])",
+        sgs_b, sgs_a
+    )));
 
     out
 }

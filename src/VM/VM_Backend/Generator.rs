@@ -4,7 +4,7 @@ use crate::VM::VM_Backend::Lua_core;
 use crate::VM::Opcodes::{self, OpcodeConfig};
 use crate::VM::packer::Packer;
 use crate::compiler::instructions::{OpCode, OpMode, OpArgMask};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use rand::{rng, Rng, SeedableRng};
 use rand::rngs::StdRng;
 use super::AntiTamper;
@@ -415,6 +415,30 @@ fn scan_used_opcodes(r: &mut PayloadReader, used_ops: &mut HashSet<u8>) {
     for _ in 0..upv_count { let s_len = r.read_u32(); r.read_bytes(s_len as usize); }
 }
 
+// Phase 3：全局槽位化上下文（跨所有 chunk 共享，重写时填充，启动期消费）
+pub(crate) struct GlobalSlotInfo {
+    pub aliases: Vec<u64>,
+    pub refcount: u32,
+}
+
+pub(crate) struct GlobalSlotCtx {
+    pub refcounts: HashMap<Vec<u8>, u32>,   // 预扫描得到的编译期全局引用次数
+    pub by_name: HashMap<Vec<u8>, GlobalSlotInfo>, // 槽位化的全局名 → 别名表
+    pub used_slots: HashSet<u64>,           // 已分配槽位（48 位，避免与 Lua 小整数混淆）
+    pub getglobal_op: u8,
+    pub getglobalstr_op: u8,
+    pub setglobal_op: u8,
+    pub setglobalstr_op: u8,
+}
+
+fn alloc_slot(used: &mut HashSet<u64>, rng: &mut StdRng) -> u64 {
+    // 槽位限制为 30 位：f64 精确表示，且启动期混淆的 bxor 路径（32 位）不会截断高位
+    loop {
+        let v = 0x4000_0000 + (rng.random::<u64>() & 0x3FFF_FFFF);
+        if used.insert(v) { return v; }
+    }
+}
+
 fn scan_setglobal_targets(r: &mut PayloadReader, targets: &mut HashSet<Vec<u8>>, setglobal_op: u8) {
     r.read_string();
     r.read_u32(); r.read_u32();
@@ -454,7 +478,46 @@ fn scan_setglobal_targets(r: &mut PayloadReader, targets: &mut HashSet<Vec<u8>>,
     for _ in 0..upv_count { r.read_string(); }
 }
 
-fn rewrite_chunk(r: &mut PayloadReader, w: &mut Vec<u8>, strings: &mut Vec<Vec<u8>>, numbers: &mut Vec<u64>, mapped_opcodes: &[Vec<u32>; 90], builtin_map: &[Vec<u32>], setglobal_targets: &HashSet<Vec<u8>>, getglobal_op: u8, getglobalstr_op: u8, inverse_opcode_map: &[u8; 90], slot_perm: &[usize], rng: &mut StdRng) {
+fn scan_global_refs(r: &mut PayloadReader, counts: &mut HashMap<Vec<u8>, u32>, global_ops: [u8; 4]) {
+    r.read_string();
+    r.read_u32(); r.read_u32();
+    r.read_u8(); r.read_u8(); r.read_u8(); r.read_u8();
+    let inst_count = r.read_u32();
+    let mut raw_insts: Vec<(u8, u8, u32, u32)> = Vec::with_capacity(inst_count as usize);
+    for _ in 0..inst_count {
+        let op = r.read_u8(); let a = r.read_u8(); let b = r.read_u32(); let c = r.read_u32();
+        raw_insts.push((op, a, b, c));
+    }
+    let const_count = r.read_u32();
+    let mut local_consts: Vec<Option<Vec<u8>>> = Vec::with_capacity(const_count as usize);
+    for _ in 0..const_count {
+        let c_type = r.read_u8();
+        match c_type {
+            0 => local_consts.push(None),
+            1 => { r.read_u8(); local_consts.push(None); }
+            2 => { r.read_u64(); local_consts.push(None); }
+            3 => { local_consts.push(Some(r.read_string().to_vec())); }
+            _ => panic!(),
+        }
+    }
+    for (op, _a, b, _c) in &raw_insts {
+        if global_ops.contains(op) {
+            if let Some(Some(s)) = local_consts.get(*b as usize) {
+                *counts.entry(s.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+    let p_count = r.read_u32();
+    for _ in 0..p_count { scan_global_refs(r, counts, global_ops); }
+    let l_count = r.read_u32();
+    r.read_bytes((l_count * 4) as usize);
+    let loc_count = r.read_u32();
+    for _ in 0..loc_count { r.read_string(); r.read_u32(); r.read_u32(); }
+    let upv_count = r.read_u32();
+    for _ in 0..upv_count { r.read_string(); }
+}
+
+fn rewrite_chunk(r: &mut PayloadReader, w: &mut Vec<u8>, strings: &mut Vec<Vec<u8>>, numbers: &mut Vec<u64>, mapped_opcodes: &[Vec<u32>; 90], builtin_map: &[Vec<u32>], setglobal_targets: &HashSet<Vec<u8>>, global_ctx: &mut GlobalSlotCtx, inverse_opcode_map: &[u8; 90], slot_perm: &[usize], rng: &mut StdRng) {
     write_string(w, r.read_string());
     w.extend_from_slice(&r.read_u32().to_le_bytes().to_vec()); w.extend_from_slice(&r.read_u32().to_le_bytes().to_vec());
     w.push(r.read_u8()); w.push(r.read_u8()); w.push(r.read_u8()); w.push(r.read_u8());
@@ -477,10 +540,12 @@ fn rewrite_chunk(r: &mut PayloadReader, w: &mut Vec<u8>, strings: &mut Vec<Vec<u
         }
     }
 
+    let global_ops = [global_ctx.getglobal_op, global_ctx.getglobalstr_op, global_ctx.setglobal_op, global_ctx.setglobalstr_op];
+
     const BITRK: u32 = 128;
     let mut referenced_elsewhere: HashSet<usize> = HashSet::new();
     for (op, _a, b, c) in &raw_insts {
-        if *op == getglobal_op || *op == getglobalstr_op { continue; }
+        if global_ops.contains(op) { continue; }
         if let Some(real_op) = OpCode::from_u8(inverse_opcode_map[*op as usize]) {
             let is_bx = matches!(real_op.mode(), OpMode::IABx);
             if is_bx {
@@ -513,9 +578,49 @@ fn rewrite_chunk(r: &mut PayloadReader, w: &mut Vec<u8>, strings: &mut Vec<Vec<u
         }
     }
 
+    // Phase 3：全局槽位化——仅被全局读/写指令引用的字符串常量（且非 builtin 改写）槽位化为数字槽位。
+    // 编译期引用计数（预扫描）≥3 的"热"全局分配 2~3 个别名槽位，每次引用随机选取别名，
+    // 破解者无法按槽位编号做频次分析。别名以普通 u64 数字常量进 numbers 池（48 位，超出 Lua 小整数范围）。
+    let mut global_alias: HashMap<usize, Vec<u64>> = HashMap::new();
+    for (idx, (ctype, bytes)) in local_consts.iter().enumerate() {
+        if *ctype != 3 { continue; }
+        if referenced_elsewhere.contains(&idx) { continue; }
+        if builtin_rewrite.contains_key(&idx) { continue; }
+        let used_by_global = raw_insts.iter().any(|(op, _a, b, _c)| global_ops.contains(op) && *b as usize == idx);
+        if !used_by_global { continue; }
+        let name = bytes.clone();
+        let refcount = global_ctx.refcounts.get(name.as_slice()).copied().unwrap_or(1);
+        let alias_count = if refcount >= 3 { 2 + (refcount % 2) as usize } else { 1 };
+        let entry = global_ctx.by_name.entry(name).or_insert_with(|| GlobalSlotInfo { aliases: Vec::new(), refcount });
+        while entry.aliases.len() < alias_count {
+            entry.aliases.push(alloc_slot(&mut global_ctx.used_slots, rng));
+        }
+        global_alias.insert(idx, entry.aliases.clone());
+        omit_const.insert(idx);
+    }
+    let mut alias_const_idx: HashMap<u64, u32> = HashMap::new(); // 别名 → 本 chunk 内追加的数字常量索引
+
     w.extend_from_slice(&inst_count.to_le_bytes());
     for (op, a, b, c) in &raw_insts {
-        if *op == getglobal_op || *op == getglobalstr_op {
+        if global_ops.contains(op) {
+            if let Some(aliases) = global_alias.get(&(*b as usize)) {
+                let alias = aliases[rng.random_range(0..aliases.len())];
+                // 注意：VM 的数字常量池以 IEEE754 双精度位模式存储（不是 u64 整数），
+                // 槽位是 48 位整数，可被 f64 精确表示，这里存 f64 比特以便解码后密钥一致
+                let new_idx = *alias_const_idx.entry(alias).or_insert_with(|| {
+                    local_consts.push((2, (alias as f64).to_le_bytes().to_vec()));
+                    (local_consts.len() - 1) as u32
+                });
+                let is_get = *op == global_ctx.getglobal_op || *op == global_ctx.getglobalstr_op;
+                let base = crate::VM::Opcodes::builtins::GLOBAL_SLOT_OP_BASE + if is_get { 0 } else { 1 };
+                let vals = builtin_map.get(base).map(|v| v.as_slice()).unwrap_or(&[]);
+                let selected_op = if !vals.is_empty() { vals[rng.random_range(0..vals.len())] } else { base as u32 };
+                w.extend_from_slice(&selected_op.to_le_bytes()); w.push(*a);
+                w.extend_from_slice(&new_idx.to_le_bytes()); w.extend_from_slice(&0u32.to_le_bytes());
+                continue;
+            }
+        }
+        if *op == global_ctx.getglobal_op || *op == global_ctx.getglobalstr_op {
             if let Some(slot) = builtin_rewrite.get(&(*b as usize)) {
                 let op_index = crate::VM::Opcodes::builtins::BUILTIN_OP_BASE + slot_perm[*slot];
                 let mapped_vals = builtin_map.get(op_index).map(|v| v.as_slice()).unwrap_or(&[]);
@@ -529,6 +634,7 @@ fn rewrite_chunk(r: &mut PayloadReader, w: &mut Vec<u8>, strings: &mut Vec<Vec<u
         w.extend_from_slice(&selected_op.to_le_bytes()); w.push(*a); w.extend_from_slice(&b.to_le_bytes()); w.extend_from_slice(&c.to_le_bytes());
     }
 
+    let const_count = local_consts.len() as u32;
     w.extend_from_slice(&const_count.to_le_bytes());
     for (idx, (c_type, bytes)) in local_consts.iter().enumerate() {
         if omit_const.contains(&idx) {
@@ -554,7 +660,7 @@ fn rewrite_chunk(r: &mut PayloadReader, w: &mut Vec<u8>, strings: &mut Vec<Vec<u
 
     let p_count = r.read_u32();
     w.extend_from_slice(&p_count.to_le_bytes());
-    for _ in 0..p_count { rewrite_chunk(r, w, strings, numbers, mapped_opcodes, builtin_map, setglobal_targets, getglobal_op, getglobalstr_op, inverse_opcode_map, slot_perm, rng); }
+    for _ in 0..p_count { rewrite_chunk(r, w, strings, numbers, mapped_opcodes, builtin_map, setglobal_targets, global_ctx, inverse_opcode_map, slot_perm, rng); }
     let l_count = r.read_u32();
     w.extend_from_slice(&l_count.to_le_bytes());
     r.read_bytes((l_count * 4) as usize);

@@ -49,6 +49,8 @@ pub struct OpcodeConfig {
     pub varargs_len: String,
     pub virtual_closures: String,
     pub builtin_reg: String,
+    pub global_get: String,
+    pub global_set: String,
 }
 
 pub struct OpcodeBuilder<'a> {
@@ -119,6 +121,8 @@ impl<'a> OpcodeBuilder<'a> {
         code = code.replace("{VARARGS_LEN}", &self.cfg.varargs_len);
         code = code.replace("{VC}", &self.cfg.virtual_closures);
         code = code.replace("{BUILTINREG}", &self.cfg.builtin_reg);
+        code = code.replace("{GLOBALGET}", &self.cfg.global_get);
+        code = code.replace("{GLOBALSET}", &self.cfg.global_set);
         
         let conditions: Vec<String> = self.opcodes.iter().map(|op| format!("op == {}", op)).collect();
         let condition = conditions.join(" or ");
