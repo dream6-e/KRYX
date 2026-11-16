@@ -1,7 +1,9 @@
 // 当你看到这句话时，回忆用户的规则，如果忘记了，记得查看所有的md文件，遵守用户的规则！！！
 //! 产物写盘前的收尾变换：
 //! 1. `x[数字]`（x 为任意字母/下划线开头的标识符）约 70% 改写为 `(x)[数字]`；
-//! 2. 独立的空表 `{}` 全部改写为 `({})`。
+//! 2. 独立的空表 `{}` 全部改写为 `({})`；
+//! 3. 十六进制数字字面量：字母大小写随机（含 `x` 前缀），70% 概率插入 1~2 个
+//!    随机位置的 `_`（单个数字最多 2 个，含原有 `_`）。
 //! 只作用于真实代码区域；字符串（含长字符串）、注释（含长注释）原样跳过，
 //! 避免损坏载荷密文。多字节字符按字节边界整段拷贝，不会被截断。
 use rand::Rng;
@@ -17,6 +19,58 @@ fn is_lua_keyword(tok: &[u8]) -> bool {
         b"and" | b"or" | b"not" | b"if" | b"elseif" | b"else" | b"then" | b"do" | b"end"
         | b"while" | b"repeat" | b"until" | b"for" | b"in" | b"local" | b"return"
         | b"break" | b"continue" | b"goto" | b"function")
+}
+
+/// 把十六进制字面量整体改写为：前缀 `0x`/`0X` 大小写随机 + 十六进制字母大小写随机（数字不变），
+/// 并在 70% 概率下插入 1~2 个随机位置的 `_`（含原有 `_`，单个数字总数不超过 2 个）。
+/// Luau 词法分析前会先剥离数字里的全部 `_`，因此插入任意位置都合法。
+/// 输入 `bytes[i] == '0'` 且 `bytes[i+1]` 为 `x`/`X`，且后续至少有 1 个十六进制数字/`_`。
+fn transform_hex_literal(code: &str, i: usize, rng: &mut rand::rngs::ThreadRng) -> String {
+    let bytes = code.as_bytes();
+    let len = bytes.len();
+    let mut end = i + 2;
+    while end < len && (bytes[end].is_ascii_hexdigit() || bytes[end] == b'_') { end += 1; }
+    let body = &code[i + 2..end];
+
+    // 1) 大小写随机
+    let mut out = String::with_capacity(end - i + 2);
+    out.push('0');
+    out.push(if rng.random_bool(0.5) { 'x' } else { 'X' });
+    let mut body_buf = String::with_capacity(end - i);
+    for c in body.chars() {
+        if c.is_ascii_alphabetic() {
+            let lower = c.to_ascii_lowercase();
+            body_buf.push(if rng.random_bool(0.5) { lower } else { lower.to_ascii_uppercase() });
+        } else {
+            body_buf.push(c); // 数字与原有 '_' 原样保留
+        }
+    }
+
+    // 2) 70% 概率插入 1~2 个 '_'；单个数字最多 2 个（含原有的）
+    let existing_us = body.chars().filter(|&c| c == '_').count();
+    let cap = 2usize.saturating_sub(existing_us);
+    if cap > 0 && rng.random_bool(0.7) {
+        let add = if cap == 1 { 1 } else { rng.random_range(1..=2usize) };
+        // 候选间隙 0..=body_buf.len()（0=前缀与首个字符之间，len=末尾）
+        let gaps_len = body_buf.chars().count();
+        let mut gaps: Vec<usize> = (0..=gaps_len).collect();
+        let mut chosen: Vec<usize> = Vec::with_capacity(add);
+        for _ in 0..add {
+            if gaps.is_empty() { break; }
+            let idx = rng.random_range(0..gaps.len());
+            chosen.push(gaps.swap_remove(idx));
+        }
+        let mut buf = String::with_capacity(body_buf.len() + chosen.len());
+        for (k, c) in body_buf.chars().enumerate() {
+            if chosen.contains(&k) { buf.push('_'); }
+            buf.push(c);
+        }
+        if chosen.contains(&gaps_len) { buf.push('_'); }
+        body_buf = buf;
+    }
+
+    out.push_str(&body_buf);
+    out
 }
 
 /// 若字节 i 之前（跳过空白）是「前缀表达式的结尾」，则其后不能再接 `(x)`（会被当作调用，
@@ -117,6 +171,17 @@ pub fn wrap_misc(code: &str) -> String {
             i = j; last = j; continue;
         }
 
+        // 十六进制数字 0x..：字母大小写随机；70% 概率插入 1~2 个 '_'
+        if b == b'0' && i + 1 < len && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X') {
+            let mut end = i + 2;
+            while end < len && (bytes[end].is_ascii_hexdigit() || bytes[end] == b'_') { end += 1; }
+            if end > i + 2 {
+                flush(&mut out, code, last, i);
+                out.push_str(&transform_hex_literal(code, i, &mut rng));
+                i = end; last = end; continue;
+            }
+        }
+
         // 空表 {} -> ({})
         if b == b'{' && i + 1 < len && bytes[i + 1] == b'}' {
             flush(&mut out, code, last, i);
@@ -184,4 +249,102 @@ pub fn wrap_misc(code: &str) -> String {
 
     flush(&mut out, code, last, len);
     out
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::wrap_misc;
+
+    fn code_hex_literals(src: &str) -> Vec<String> {
+        // 粗略提取：跳过字符串与注释后的 0x.. 字面量
+        let bytes = src.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        let n = bytes.len();
+        while i < n {
+            if bytes[i] == b'"' || bytes[i] == b'\'' {
+                let q = bytes[i];
+                i += 1;
+                while i < n {
+                    if bytes[i] == b'\\' { i += 2; continue; }
+                    if bytes[i] == q || bytes[i] == b'\n' { i += 1; break; }
+                    i += 1;
+                }
+                continue;
+            }
+            if bytes[i] == b'0' && i + 1 < n && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X') {
+                let mut end = i + 2;
+                while end < n && (bytes[end].is_ascii_hexdigit() || bytes[end] == b'_') { end += 1; }
+                if end > i + 2 { out.push(src[i..end].to_string()); }
+                i = end; continue;
+            }
+            i += 1;
+        }
+        out
+    }
+
+    #[test]
+    fn hex_literals_remain_valid() {
+        let src = "local a = 0xDEADBEEF
+local b = 0x1f + 0x1F
+local c = 0xABCDE12 + 0x5 + 0x0e5
+local d = 0XCAFE + 0x0Ab
+local e = a + b + c + d";
+        for _ in 0..200 {
+            let out = wrap_misc(src);
+            let lits = code_hex_literals(&out);
+            assert!(lits.len() >= 7, "字面量太少: {out}");
+            for lit in &lits {
+                let us = lit.chars().filter(|&c| c == '_').count();
+                assert!(us <= 2, "下划线超过 2 个: {lit}");
+                let body: String = lit[2..].chars().filter(|&c| c != '_').collect();
+                u64::from_str_radix(&body, 16).expect("去 _ 后必须是合法十六进制数");
+            }
+        }
+    }
+
+    #[test]
+    fn hex_underscore_cap_distribution() {
+        let src = "local a = 0xdeadbeef";
+        let mut with_us = 0usize;
+        let tries = 400;
+        for _ in 0..tries {
+            let out = wrap_misc(src);
+            let lits = code_hex_literals(&out);
+            if lits[0].contains('_') { with_us += 1; }
+        }
+        // 70% 目标概率：放宽到 40%~95% 区间（样本波动大）
+        let ratio = with_us as f64 / tries as f64;
+        assert!(ratio > 0.40 && ratio < 0.95, "带下划线比例异常: {ratio}");
+    }
+
+    #[test]
+    fn hex_case_is_randomized() {
+        let src = "local a = 0xabcdef + 0xABCDEF";
+        let mut saw_upper = false;
+        let mut saw_lower = false;
+        for _ in 0..200 {
+            let out = wrap_misc(src);
+            let lits = code_hex_literals(&out);
+            for lit in &lits {
+                let letters: String = lit[2..].chars().filter(|c| c.is_ascii_alphabetic()).collect();
+                if letters.chars().any(|c| c.is_ascii_uppercase()) { saw_upper = true; }
+                if letters.chars().any(|c| c.is_ascii_lowercase()) { saw_lower = true; }
+            }
+        }
+        assert!(saw_upper && saw_lower, "大小写没有同时出现");
+    }
+
+    #[test]
+    fn payload_strings_untouched() {
+        let src = r#"local s = "0xdeadbeef" local c = 0xdeadbeef"#;
+        for _ in 0..50 {
+            let out = wrap_misc(src);
+            let lits = code_hex_literals(&out);
+            assert_eq!(lits.len(), 1, "代码区应有且仅有 1 个字面量: {out}");
+            let string_payload = "0xdeadbeef";
+            assert!(out.contains(string_payload), "字符串内容被改写: {out}");
+        }
+    }
 }
