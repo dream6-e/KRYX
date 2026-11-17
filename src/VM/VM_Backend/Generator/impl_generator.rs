@@ -77,6 +77,46 @@ impl Generator {
                 global_boot.push((pos, info.aliases.clone()));
             }
         }
+        // Phase 3-2：假槽（decoy）——与真实条目形态完全一致的启动注册代码（垃圾名字、
+        // 随机 30 位槽位、getter/setter 闭包），槽位不被字节码引用、数字池混入死条目，
+        // 破解者无法区分真假条目，频次/引用分析被打乱。
+        // D = max(4, 真实条目数 + 2) + 随机 0~2，封顶 16。
+        let mut decoy_entries: Vec<(usize, Vec<u64>)> = Vec::new();
+        {
+            let mut used_slots: std::collections::HashSet<u64> = std::collections::HashSet::new();
+            for (_, aliases) in &global_boot { for a in aliases { used_slots.insert(*a); } }
+            let real_n = global_boot.len();
+            let decoy_count = (real_n.max(2) + 2 + rng.range(0, 3)).max(4).min(16);
+            let mut used_names: std::collections::HashSet<Vec<u8>> = strings.iter().cloned().collect();
+            for n in Opcodes::builtins::BUILTIN_NAMES { used_names.insert(n.as_bytes().to_vec()); }
+            for _ in 0..decoy_count {
+                // 假名：形态合法的标识符乱码
+                let name_bytes = loop {
+                    let len = rng.range(5, 12);
+                    let mut b = Vec::with_capacity(len);
+                    for i in 0..len {
+                        let cls = rng.range(0, 3);
+                        let ch = if i == 0 || cls == 0 {
+                            b'a' + rng.range(0, 26) as u8
+                        } else if cls == 1 {
+                            b'A' + rng.range(0, 26) as u8
+                        } else {
+                            b'0' + rng.range(0, 10) as u8
+                        };
+                        b.push(ch);
+                    }
+                    if used_names.insert(b.clone()) { break b; }
+                };
+                // 假槽位：同 30 位空间，唯一；以 f64 位模式写入数字池（死条目）
+                let slot = loop {
+                    let v = 0x4000_0000 + rng.range(0, 0x4000_0000) as u64;
+                    if used_slots.insert(v) { numbers.push((v as f64).to_bits()); break v; }
+                };
+                let pos = strings.len();
+                strings.push(name_bytes);
+                decoy_entries.push((pos, vec![slot]));
+            }
+        }
 
         // 最外层 return ({ ... }) 壳：全部内建函数作为壳字段一次性解析，
         // wai 函数体只通过壳引用访问内建函数，不直接出现 math.floor 等全局引用。
@@ -555,9 +595,14 @@ impl Generator {
             ));
             let _ = name;
         }
-        if !global_boot.is_empty() {
+        let n_real = global_boot.len();
+        let n_decoy = decoy_entries.len();
+        let mut emission = std::mem::take(&mut global_boot);
+        emission.extend(decoy_entries);
+        rng.shuffle(&mut emission);
+        if !emission.is_empty() {
             out.push_str(&format!(" {} = {{}}; {} = {{}}; ", gget, gset));
-            for (raw_idx, aliases) in &global_boot {
+            for (raw_idx, aliases) in &emission {
                 let lua_idx = raw_idx + 1;
                 out.push_str(&format!(
                     "{}={}({}[{}],{}); ",
