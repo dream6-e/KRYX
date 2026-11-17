@@ -49,7 +49,7 @@ enum Step {
 pub struct Packer;
 
 impl Packer {
-    pub fn pack(input: &[u8], vm_rng: &mut GenRng) -> (String, String, String) {
+    pub fn pack(input: &[u8], vm_rng: &mut GenRng) -> (String, String, String, usize) {
         let seed = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u32)
@@ -59,21 +59,25 @@ impl Packer {
         for _ in 0..16 {
             keys.push((rng.next() & 0xFF) as u8);
         }
-        let alpha_str = Self::generate_alphabet();
-
         let sandbox = generate_sandbox("kryvex");
         let compressed_sb = Self::encode_stream(sandbox.payload.as_bytes());
         let encrypted_sb = Self::xor_stream_with_keys(&compressed_sb, &keys);
-        let b86_sb = Self::base86_encode_with_alpha(&encrypted_sb, &alpha_str);
+        let b85_sb = Self::base85_encode_mixed(&encrypted_sb);
 
         let compressed_main = Self::encode_stream(input);
         let encrypted_main = Self::xor_stream_with_keys(&compressed_main, &keys);
-        let b86_main = Self::base86_encode_with_alpha(&encrypted_main, &alpha_str);
+        let b85_main = Self::base85_encode_mixed(&encrypted_main);
 
-        let lua_payload = format!("{}~{}", b86_sb, b86_main);
-        
-        let (decoder_script, entry_func) = Self::build_decoder(&keys, &alpha_str, vm_rng);
-        (lua_payload, decoder_script, entry_func)
+        let lua_payload = format!("{}~{}", b85_sb, b85_main);
+        // 长括号 padding 选择：载荷字母表为 0x21..0x75（含 ']'(0x5D) 与 '='(0x3D)），
+        // 可能含 `]={k}]` 破坏长括号；选最小 k≥1 使终止符不出现，形态随载荷自适应。
+        let mut pad = 1usize;
+        while lua_payload.contains(&format!("]{}]", "=".repeat(pad))) {
+            pad += 1;
+        }
+
+        let (decoder_script, entry_func) = Self::build_decoder(&keys, vm_rng);
+        (lua_payload, decoder_script, entry_func, pad)
     }
 
     fn encode_stream(input: &[u8]) -> Vec<u8> {
@@ -195,82 +199,51 @@ impl Packer {
         output
     }
 
-    fn generate_alphabet() -> String {
-        let seed = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u32)
-            .unwrap_or(0x56781234);
-        let mut rng = SimpleRng::new(seed);
-
-        let mut base_chars: Vec<char> = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!#$%&()*+,./:;<=>?@|_\'\"\\".chars().collect();
-        let n = base_chars.len();
-        for i in (1..n).rev() {
-            let j = rng.next_range(0, i + 1);
-            base_chars.swap(i, j);
+    /// sample2 风格的自研混合进制编码（Ascii85 形态）：
+    /// 每 4 字节 -> 5 个字符，字符 = 0x21 + 数字（'!'..'u'，跳过容器不允许的字符并不可能，
+    /// 因为 0x21..0x75 全部可直接置于长括号内；长括号 padding 由 pack() 自适应选择）。
+    /// 解码侧直接 byte - 0x21 做混合进制还原：v = b1 + b2*85 + b3*85^2 + b4*85^3 + b5*85^4，
+    /// 输出小端字节序。余数：3 字节 -> 4 字符、2 字节 -> 3 字符、1 字节 -> 2 字符。
+    fn base85_encode_mixed(input: &[u8]) -> String {
+        let mut encoded = String::with_capacity(input.len() / 4 * 5 + 8);
+        let mut i = 0;
+        while i + 4 <= input.len() {
+            let v = ((input[i] as u32) << 24)
+                | ((input[i + 1] as u32) << 16)
+                | ((input[i + 2] as u32) << 8)
+                | (input[i + 3] as u32);
+            // 小端数字序（低权重先行）：c1=v%85, c2=(v/85)%85, ..., c5=v/85^4
+            let mut rem = v;
+            for _ in 0..5 {
+                encoded.push((0x21 + (rem % 85) as u8) as char);
+                rem /= 85;
+            }
+            i += 4;
         }
-        base_chars.insert(0, '-');
-        base_chars.iter().collect()
-    }
-
-    fn base86_encode_with_alpha(input: &[u8], alphabet_str: &str) -> String {
-        let base_chars: Vec<char> = alphabet_str.chars().collect();
-        let mut encoded = String::new();
-        let len = input.len();
-        let chunks = len / 4;
-        for i in 0..chunks {
-            let val = ((input[i * 4] as usize) << 24)
-                | ((input[i * 4 + 1] as usize) << 16)
-                | ((input[i * 4 + 2] as usize) << 8)
-                | (input[i * 4 + 3] as usize);
-            let c1 = val / 54700816;
-            let r1 = val % 54700816;
-            let c2 = r1 / 636056;
-            let r2 = r1 % 636056;
-            let c3 = r2 / 7396;
-            let r3 = r2 % 7396;
-            let c4 = r3 / 86;
-            let c5 = r3 % 86;
-            encoded.push(base_chars[c1]);
-            encoded.push(base_chars[c2]);
-            encoded.push(base_chars[c3]);
-            encoded.push(base_chars[c4]);
-            encoded.push(base_chars[c5]);
-        }
-        let rem = len % 4;
+        let rem = input.len() - i;
         if rem == 3 {
-            let val = ((input[len - 3] as usize) << 16)
-                | ((input[len - 2] as usize) << 8)
-                | (input[len - 1] as usize);
-            let c1 = val / 636056;
-            let r1 = val % 636056;
-            let c2 = r1 / 7396;
-            let r2 = r1 % 7396;
-            let c3 = r2 / 86;
-            let c4 = r2 % 86;
-            encoded.push(base_chars[c1]);
-            encoded.push(base_chars[c2]);
-            encoded.push(base_chars[c3]);
-            encoded.push(base_chars[c4]);
+            let v = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8) | (input[i + 2] as u32);
+            let mut rem2 = v;
+            for _ in 0..4 {
+                encoded.push((0x21 + (rem2 % 85) as u8) as char);
+                rem2 /= 85;
+            }
         } else if rem == 2 {
-            let val = ((input[len - 2] as usize) << 8) | (input[len - 1] as usize);
-            let c1 = val / 7396;
-            let r1 = val % 7396;
-            let c2 = r1 / 86;
-            let c3 = r1 % 86;
-            encoded.push(base_chars[c1]);
-            encoded.push(base_chars[c2]);
-            encoded.push(base_chars[c3]);
+            let v = ((input[i] as u32) << 8) | (input[i + 1] as u32);
+            let mut rem2 = v;
+            for _ in 0..3 {
+                encoded.push((0x21 + (rem2 % 85) as u8) as char);
+                rem2 /= 85;
+            }
         } else if rem == 1 {
-            let val = input[len - 1] as usize;
-            let c1 = val / 86;
-            let c2 = val % 86;
-            encoded.push(base_chars[c1]);
-            encoded.push(base_chars[c2]);
+            let v = input[i] as u32;
+            encoded.push((0x21 + (v % 85) as u8) as char);
+            encoded.push((0x21 + (v / 85) as u8) as char);
         }
         encoded
     }
 
-    fn build_decoder(keys: &[u8], alphabet: &str, rng: &mut GenRng) -> (String, String) {
+    fn build_decoder(keys: &[u8], rng: &mut GenRng) -> (String, String) {
         let f_entry = rng.name();
         let v_data = rng.name();
 
@@ -312,7 +285,6 @@ impl Packer {
         let f_w = rng.name();
         let f_u = rng.name();
         let f_ptr = rng.name();
-        let f_map = rng.name();
         let f_k = rng.name();
         let f_memo = rng.name();
         let f_len = rng.name();
@@ -471,66 +443,6 @@ impl Packer {
         }
         let combined_key_expr = key_parts_exprs.join(",");
 
-        let chars: Vec<char> = alphabet.chars().collect();
-        let num_parts = rng.range(6, 12);
-        let mut part_boundaries = Vec::new();
-        for _ in 0..num_parts - 1 {
-            part_boundaries.push(rng.range(1, chars.len()));
-        }
-        part_boundaries.sort_unstable();
-        part_boundaries.dedup();
-        let mut boundaries = vec![0];
-        boundaries.extend(part_boundaries);
-        if *boundaries.last().unwrap() != chars.len() {
-            boundaries.push(chars.len());
-        }
-
-        let mut parts_exprs = Vec::new();
-        let num_actual_parts = boundaries.len() - 1;
-
-        for i in 0..num_actual_parts {
-            let start = boundaries[i];
-            let end = boundaries[i + 1];
-            let part_chars = &chars[start..end];
-            let method = rng.range(0, 3);
-            let expr = match method {
-                0 => {
-                    let mut rev_chars = part_chars.to_vec();
-                    rev_chars.reverse();
-                    let mut safe_str = String::new();
-                    for c in rev_chars {
-                        match c {
-                            '\\' => safe_str.push_str("\\\\"),
-                            '"' => safe_str.push_str("\\\""),
-                            '\'' => safe_str.push_str("\\'"),
-                            '\n' => safe_str.push_str("\\n"),
-                            '\r' => safe_str.push_str("\\r"),
-                            _ => safe_str.push(c),
-                        }
-                    }
-                    format!("s.reverse(\"{}\")", safe_str)
-                }
-                1 => {
-                    let mut char_args = String::new();
-                    for (idx, c) in part_chars.iter().enumerate() {
-                        if idx > 0 { char_args.push(','); }
-                        char_args.push_str(&(*c as u8).to_string());
-                    }
-                    format!("s.char({})", char_args)
-                }
-                _ => {
-                    let mut escaped = String::new();
-                    for c in part_chars {
-                        escaped.push_str(&format!("\\{:03}", *c as u8));
-                    }
-                    format!("\"{}\"", escaped)
-                }
-            };
-            parts_exprs.push(expr);
-        }
-        
-        let combined_alpha_expr = parts_exprs.join(",");
-
         let script = format!("
 local function {f_entry}({v_data})
     return ({{
@@ -550,9 +462,9 @@ local function {f_entry}({v_data})
             local function hg(dr, ...) repeat return c or nil until dr end;local df=hg(true)
             return df;
         end,
-        {m_next} = function(q, s, r, c, e, v, x, y, z, i, d, m, b, k, B, F)
+        {m_next} = function(q, s, r, c, e, v, x, y, z, i, d, b, k, B, F)
     B, F = s.byte, s.floor;
-    i, d, m, b, k = s.idx, s.data, s.map, s.buf, s.kidx;
+    i, d, b, k = s.idx, s.data, s.buf, s.kidx;
     if #b > 0 then
         r = s.remove(b, 1);
         c = q:{m_bxor}(s, r, s.k[k + 1]);
@@ -562,25 +474,25 @@ local function {f_entry}({v_data})
     if i > s.len then return nil end;
     e = s.len - i + 1;
     if e >= 5 then
-        v = m[B(d, i)] * 54700816 + m[B(d, i+1)] * 636056 + m[B(d, i+2)] * 7396 + m[B(d, i+3)] * 86 + m[B(d, i+4)];
+        v = (B(d, i)-33) + (B(d, i+1)-33)*85 + (B(d, i+2)-33)*7225 + (B(d, i+3)-33)*614125 + (B(d, i+4)-33)*52200625;
         z, y, x = v % 256, F(v / 256) % 256, F(v / 65536) % 256;
         v = F(v / 16777216);
         b[1], b[2], b[3], b[4] = v, x, y, z;
         i = i + 5;
     elseif e >= 4 then
-        v = m[B(d, i)] * 636056 + m[B(d, i+1)] * 7396 + m[B(d, i+2)] * 86 + m[B(d, i+3)];
+        v = (B(d, i)-33) + (B(d, i+1)-33)*85 + (B(d, i+2)-33)*7225 + (B(d, i+3)-33)*614125;
         y, x = v % 256, F(v / 256) % 256;
         v = F(v / 65536);
         b[1], b[2], b[3] = v, x, y;
         i = i + 4;
     elseif e >= 3 then
-        v = m[B(d, i)] * 7396 + m[B(d, i+1)] * 86 + m[B(d, i+2)];
+        v = (B(d, i)-33) + (B(d, i+1)-33)*85 + (B(d, i+2)-33)*7225;
         x = v % 256;
         v = F(v / 256);
         b[1], b[2] = v, x;
         i = i + 3;
     elseif e >= 2 then
-        v = m[B(d, i)] * 86 + m[B(d, i+1)];
+        v = (B(d, i)-33) + (B(d, i+1)-33)*85;
         b[1] = v;
         i = i + 2;
     else
@@ -589,21 +501,7 @@ local function {f_entry}({v_data})
     s.idx = i;
     return q:{m_next}(s);
 end,
-        {m_init_map} = function(q, s, parts, alpha, i, kparts, kstr)
-            parts = {{{combined_alpha_expr}}};
-            alpha = \"\";
-            i = 1;
-            while true do
-                if i > {num_actual_parts} then break end;
-                alpha = alpha .. parts[i];
-                i = i + 1;
-            end;
-            i = 1;
-            while true do
-                if i > #alpha then break end;
-                s.map[s.byte(alpha, i)] = i - 1;
-                i = i + 1;
-            end;
+        {m_init_map} = function(q, s, parts, i, kparts, kstr)
             kparts = {{{combined_key_expr}}};
             kstr = \"\";
             i = 1;
@@ -662,7 +560,7 @@ end,
             end)({{
                 data = data, pc = {pc_state0}, insts = {{}}, tamper = {tamper_val}, handlers = {{}},
                 r_flg = false, r_vals = {{}}, r_len = 0, tail_flg = false,
-                map = {{}}, idx = 1, len = #data, k = {{}}, kidx = 0, buf = {{}}, memo = {{}},
+                idx = 1, len = #data, k = {{}}, kidx = 0, buf = {{}}, memo = {{}},
                 unpack = q.{k_un}, char = q.{k_ch}, byte = q.{k_by}, floor = q.{k_fl}, insert = q.{k_ins}, concat = q.{k_cat}, remove = q.{k_rem}, reverse = q.{k_rev},
                 bc = 0, res = {{}}, f = 0, p1 = 0, p2 = 0, w = 0, u = 0, ptr = 0
             }});
@@ -685,7 +583,6 @@ end
             ("w", f_w.as_str()),
             ("u", f_u.as_str()),
             ("ptr", f_ptr.as_str()),
-            ("map", f_map.as_str()),
             ("k", f_k.as_str()),
             ("memo", f_memo.as_str()),
             ("len", f_len.as_str()),
