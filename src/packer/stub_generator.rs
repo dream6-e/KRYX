@@ -84,6 +84,7 @@ impl StubGenerator {
         let v_v = pool.get();
         let v_dec = pool.get();
         let v_st = pool.get();
+        let v_ky = pool.get();
         let v_current = pool.get();
         let v_i = pool.get();
         let v_h = pool.get();
@@ -142,7 +143,7 @@ impl StubGenerator {
         }
         
         let mut m_init_insts_body = String::new();
-        m_init_insts_body.push_str(&format!("local {v_st}={init_st};local function ky(...) return not(...) end while ky(false) do ", v_st=v_st, init_st=insts_states[0]));
+        m_init_insts_body.push_str(&format!("local {v_st}={init_st};local function {v_ky}(...) return not(...) end while {v_ky}(false) do ", v_st=v_st, init_st=insts_states[0]));
         for (i, inst) in insts_init.iter().enumerate() {
             let curr_st = insts_states[i];
             let next_st = insts_states[i+1];

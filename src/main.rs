@@ -147,15 +147,9 @@ fn main() {
                         process::exit(1);
                     }
                 };
-                format!(
-                    "{}",
-                    compressed_packed_vm
-                )
+                compressed_packed_vm
             } else {
-                format!(
-    "--Kryvex v2.2,by 1%@\n{}",
-    processed_vm
-)
+                processed_vm
             };
 
             let final_code = parenwrap::wrap_misc(&final_code);

@@ -366,7 +366,11 @@ impl Generator {
             cstream = fn_chacha_stream, cblock = fn_chacha_block, csalt = chacha_salt_var
         ));
         
+        // 6 个奇数字节的随机前缀（替代固定 KRYVEX 魔数，避免产物明文特征）。
+        // 解码器跳过循环按字节奇偶推进，奇数字节保证恰好停在 payload 起点。
+        let payload_marker: String = (0..6).map(|_| (b'a' + 2 * rng.range(0, 13) as u8) as char).collect();
         let block_dec_header = format!("local {}, {} = {}, {}; local {} = ([=[KRYVEX{}]=]); local {}, {}, {} = {}, {}, {}; repeat local {}={}({},{}); {}={}+{}; {}={}+{}; {}={}+({}%{}); until {}>={}; {} = ({}-{}) + ({}-{}); {}={}+(type({})=='function' and 0 or {}); local mt_vc={{}}; mt_vc[\"__\"..\"mode\"]='k'; {} = setmetatable({{}}, mt_vc); local {}, {} = {}({}({},{}+{}*{})), {}; local function {}() local {}={}({},{},{}); {}={}+{}; return {} end; local k1,k2,k3,k4 = {}(),{}(),{}(),{}(); ", fn_s_byte, fn_s_sub, "string_byte", "string_sub", var_raw_p, payload_str, var_chk, var_idx, var_junk, rng.obfuscate_num(0i64, 1, &keys), rng.obfuscate_num(1i64, 1, &keys), rng.obfuscate_num(0i64, 1, &keys), var_b, fn_s_byte, var_raw_p, var_idx, var_chk, var_chk, var_b, var_idx, var_idx, rng.obfuscate_num(1i64, 1, &keys), var_junk, var_junk, var_b, rng.obfuscate_num(2i64, 1, &keys), var_idx, rng.obfuscate_num(7i64, 1, &keys), var_tamper, var_chk, var_chk, var_junk, var_junk, var_tamper, var_tamper, fn_s_byte, rng.obfuscate_num(73i64, 1, &keys), var_vc, var_p, var_a2, entry_func, fn_s_sub, var_raw_p, var_idx, var_tamper, rng.obfuscate_num(1337i64, 2, &keys), rng.obfuscate_num(1i64, 1, &keys), fn_a3, x, fn_s_byte, var_p, var_a2, var_a2, var_a2, var_a2, rng.obfuscate_num(1i64, 1, &keys), x, fn_a3, fn_a3, fn_a3, fn_a3);
+        let block_dec_header = block_dec_header.replacen("KRYVEX", &payload_marker, 1);
         let block_dec_helpers = format!("local function {}(a, b) local r, p, c = 0, 1, 0; while a > 0 or b > 0 do local ra, rb = a % 2, b % 2; if ra ~= rb then c = c + p end; a, b, p = math_floor(a / 2), math_floor(b / 2), p * 2 end; return c end; local function {}(x, n) if n == 0 then return x end return ((x * (2^(8-n))) % 256) + math_floor(x / (2^n)) end; local function {}() local enc = {}(); local dec = (enc - 66 + 256) % 256; dec = {}(dec, k4); dec = {}(dec, k3 % 8); dec = (dec + k2) % 256; dec = {}(dec, k1); local orig = dec; k1 = (k1 + orig) % 256; k1 = ((k1 * 2) % 256) + math_floor(k1 / 128); k1 = (k1 + 27) % 256; k2 = (k2 * 3 + enc) % 256; k2 = ((k2 * 64) % 256) + math_floor(k2 / 4); k3 = {}(k3, (k1 - k4 + 256) % 256); k4 = (k4 + k2) % 256; k4 = ((k4 * 8) % 256) + math_floor(k4 / 32); return orig end; ", fn_bxor, fn_b_rotr, fn_read_dec, fn_a3, fn_bxor, fn_b_rotr, fn_bxor, fn_bxor);
         let block_dec_readers = format!("local function {}() local {}={{}}; for i=1,4 do {}[i]={}() end; return {}[1]+({}[2]*256)+({}[3]*65536)+({}[4]*16777216) end; local function {}() local {}={{}}; for i=1,4 do {}[i]={}() end; return {}[1]+({}[2]*{})+({}[3]*{})+({}[4]*{}) end; local function {}() local {}={}(); if {}=={} then return '' end; local {}={{}}; for _={},{} do {}[_]=string_char({}()) end; return table_concat({}) end; local function {}() local {}={}(); if {}>=2^31 then return {}-2^32 else return {} end end; ", fn_u32_dec, var__a, var__a, fn_read_dec, var__a, var__a, var__a, var__a, fn_a5, var__a, var__a, fn_a3, var__a, var__a, rng.obfuscate_num(256i64, 1, &keys), var__a, rng.obfuscate_num(65536i64, 1, &keys), var__a, rng.obfuscate_num(16777216i64, 1, &keys), fn_read_string, l, fn_a5, l, rng.obfuscate_num(0i64, 1, &keys), s_t, rng.obfuscate_num(1i64, 1, &keys), l, s_t, fn_a3, s_t, fn_a10, v, fn_a5, v, v, v);
         
@@ -395,6 +399,7 @@ impl Generator {
         let var_cache = rng.name();
         let var_cache_n = rng.name();
         let cache_limit_obf = rng.obfuscate_num(CONST_CACHE_LIMIT, 1, &keys);
+        let var_tamper_tag = rng.name();
 
         let var_state = rng.name();
         let s_init = rng.range(0x100, 0xFFF) as i64;
@@ -443,7 +448,7 @@ impl Generator {
                         local mt_consts={{}}; \
                         mt_consts[\"__\"..\"index\"]=function({var_tbl},{var_idx_chunk}) \
                             if not {var_state_flag} then \
-                                return \"KryvexObf_\"..{var_idx_chunk} \
+                                return \"{var_tamper_tag}\"..{var_idx_chunk} \
                             end; \
                             local cached={var_cache}[{var_idx_chunk}]; \
                             if cached~=nil then \
@@ -527,6 +532,7 @@ impl Generator {
             var_cache_n = var_cache_n,
             zero_obf2 = rng.format_num(0),
             cache_limit_obf = cache_limit_obf,
+            var_tamper_tag = var_tamper_tag,
             var_tbl = var_tbl,
             var_idx_chunk = var_idx_chunk,
             var_state_flag = var_state_flag,
