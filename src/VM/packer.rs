@@ -295,6 +295,44 @@ impl Packer {
         let k_lf = rng.name();
         let k_gm = rng.name();
 
+        // 内部状态表字段名：全部随机化。
+        // compressor 的重命名门禁（len>4 且非保留成员）会跳过 len<=4 的短字段名
+        // 与内建库同名字段，产物中会出现语义变量（map/idx/len/...），因此在模板层
+        // 先把这些内部字段名全部替换为随机名；词法扫描在 format! 之后统一做整词替换。
+        let f_data = rng.name();
+        let f_pc = rng.name();
+        let f_idx = rng.name();
+        let f_kidx = rng.name();
+        let f_buf = rng.name();
+        let f_res = rng.name();
+        let f_bc = rng.name();
+        let f_f = rng.name();
+        let f_p1 = rng.name();
+        let f_p2 = rng.name();
+        let f_w = rng.name();
+        let f_u = rng.name();
+        let f_ptr = rng.name();
+        let f_map = rng.name();
+        let f_k = rng.name();
+        let f_memo = rng.name();
+        let f_len = rng.name();
+        let f_insts = rng.name();
+        let f_tamper = rng.name();
+        let f_handlers = rng.name();
+        let f_r_flg = rng.name();
+        let f_r_vals = rng.name();
+        let f_r_len = rng.name();
+        let f_tail_flg = rng.name();
+        let f_unpack = rng.name();
+        let f_char = rng.name();
+        let f_byte = rng.name();
+        let f_floor = rng.name();
+        let f_insert = rng.name();
+        let f_concat = rng.name();
+        let f_remove = rng.name();
+        let f_reverse = rng.name();
+        let sb_chunk = rng.name();
+
         let op_state0 = rng.range(100, 200);
         let op_state1 = rng.range(201, 300);
         let op_state2 = rng.range(301, 400);
@@ -389,7 +427,7 @@ impl Packer {
         init_handlers_loop.push_str("else break end end;");
 
         let router_code = ControlFlowBuilder::build_fast_router(
-            "s.pc", "s.insts", "inst", "s.handlers", "s.r_flg", "s.r_vals", "s.r_len", "s.tamper", "s.tail_flg", rng
+            "s.pc", "s.insts", "inst", "s.handlers", "s.r_flg", "s.r_vals", "s.r_len", "s.tamper", "s.tail_flg", &format!("s.{}", f_unpack), rng
         );
 
         let num_key_parts = rng.range(3, 7);
@@ -608,7 +646,7 @@ end,
                 
                 local get_sb_code = load_func(\"return \" .. sb_expr);
                 local sb_code = get_sb_code and get_sb_code() or \"\";
-                local env_maker_chunk = load_func(sb_code, \"kryvex\");
+                local env_maker_chunk = load_func(sb_code, \"{sb_chunk}\");
                 
                 local stage2 = function()
                     s.data = parts[2];
@@ -633,6 +671,146 @@ end,
     }}):{m_main}({v_data});
 end
 ");
+        let post_pairs: Vec<(&str, &str)> = vec![
+            ("data", f_data.as_str()),
+            ("pc", f_pc.as_str()),
+            ("idx", f_idx.as_str()),
+            ("kidx", f_kidx.as_str()),
+            ("buf", f_buf.as_str()),
+            ("res", f_res.as_str()),
+            ("bc", f_bc.as_str()),
+            ("f", f_f.as_str()),
+            ("p1", f_p1.as_str()),
+            ("p2", f_p2.as_str()),
+            ("w", f_w.as_str()),
+            ("u", f_u.as_str()),
+            ("ptr", f_ptr.as_str()),
+            ("map", f_map.as_str()),
+            ("k", f_k.as_str()),
+            ("memo", f_memo.as_str()),
+            ("len", f_len.as_str()),
+            ("insts", f_insts.as_str()),
+            ("tamper", f_tamper.as_str()),
+            ("handlers", f_handlers.as_str()),
+            ("r_flg", f_r_flg.as_str()),
+            ("r_vals", f_r_vals.as_str()),
+            ("r_len", f_r_len.as_str()),
+            ("tail_flg", f_tail_flg.as_str()),
+            ("unpack", f_unpack.as_str()),
+            ("char", f_char.as_str()),
+            ("byte", f_byte.as_str()),
+            ("floor", f_floor.as_str()),
+            ("insert", f_insert.as_str()),
+            ("concat", f_concat.as_str()),
+            ("remove", f_remove.as_str()),
+            ("reverse", f_reverse.as_str()),
+        ];
+        let script = Self::rename_lua_idents(&script, &post_pairs);
         (script, f_entry)
+    }
+
+    fn itoa(mut n: usize) -> String {
+        let mut s = vec![];
+        loop {
+            s.push((b'0' + (n % 10) as u8) as char);
+            n /= 10;
+            if n == 0 { break; }
+        }
+        s.reverse();
+        s.into_iter().collect()
+    }
+
+    // 内部状态表字段名的整词替换：跳过字符串字面量（支持 \ 转义），先把壳里
+    // 引用全局库函数的表达式打成占位符（保护 unpack or table.unpack / string.char
+    // 等全局引用，避免被整词替换误伤），替换完成后再恢复占位符。
+    fn rename_lua_idents(code: &str, pairs: &[(&str, &str)]) -> String {
+        use std::collections::HashMap;
+
+        // 壳中引用的全局库函数（按长度从长到短，避免短串先匹配占用长串前缀）
+        const PROTECT: &[&str] = &[
+            "unpack or table.unpack",
+            "string.reverse",
+            "string.gmatch",
+            "loadstring or load",
+            "table.unpack",
+            "string.char",
+            "string.byte",
+            "math.floor",
+            "table.insert",
+            "table.concat",
+            "table.remove",
+        ];
+
+        let bytes = code.as_bytes();
+        let mut buf = bytes.to_vec();
+        for (idx, pat) in PROTECT.iter().enumerate() {
+            let pat_bytes = pat.as_bytes();
+            let mut new_buf: Vec<u8> = Vec::with_capacity(buf.len() + 8);
+            let mut i = 0usize;
+            while i < buf.len() {
+                if buf[i..].starts_with(pat_bytes) {
+                    new_buf.push(0x01);
+                    new_buf.extend_from_slice(Self::itoa(idx).as_bytes());
+                    new_buf.push(0x01);
+                    i += pat_bytes.len();
+                } else {
+                    new_buf.push(buf[i]);
+                    i += 1;
+                }
+            }
+            buf = new_buf;
+        }
+
+        let mut map: HashMap<&[u8], &str> = HashMap::with_capacity(pairs.len());
+        for (from, to) in pairs {
+            map.insert(from.as_bytes(), to);
+        }
+
+        let is_ident_start = |c: u8| c.is_ascii_alphabetic() || c == b'_';
+        let is_ident_char = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+
+        let mut out: Vec<u8> = Vec::with_capacity(buf.len() + pairs.len() * 8);
+        let mut i = 0usize;
+        while i < buf.len() {
+            let c = buf[i];
+            if c == b'"' || c == b'\'' {
+                let quote = c;
+                let start = i;
+                i += 1;
+                while i < buf.len() {
+                    let d = buf[i];
+                    if d == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    if d == quote { break; }
+                }
+                out.extend_from_slice(&buf[start..i]);
+                continue;
+            }
+            if is_ident_start(c) {
+                let start = i;
+                i += 1;
+                while i < buf.len() && is_ident_char(buf[i]) {
+                    i += 1;
+                }
+                let word = &buf[start..i];
+                if let Some(rep) = map.get(word) {
+                    out.extend_from_slice(rep.as_bytes());
+                } else {
+                    out.extend_from_slice(word);
+                }
+                continue;
+            }
+            out.push(c);
+            i += 1;
+        }
+        let mut out_str = String::from_utf8(out).expect("非 UTF-8 输出");
+        for (idx, pat) in PROTECT.iter().enumerate() {
+            let placeholder = format!("\u{1}{}\u{1}", Self::itoa(idx));
+            out_str = out_str.replace(&placeholder, pat);
+        }
+        out_str
     }
 }

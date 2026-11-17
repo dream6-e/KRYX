@@ -96,6 +96,7 @@ impl ControlFlowBuilder {
         var_r_len: &str,
         var_tamper: &str,
         var_tail_flg: &str,
+        var_unpack: &str,
         rng: &mut GenRng,
     ) -> String {
         let keys = CipherKeys {
@@ -197,8 +198,8 @@ impl ControlFlowBuilder {
         ));
         
         out.push_str("else ");
-        out.push_str(&format!("if {} then if {} then {},{}=false,false;{}={};else return unpack({},{},{})end else {}={};end ", 
-            var_r_flg, var_tail_flg, var_tail_flg, var_r_flg, var_t, Self::obfuscate_num_depth(fetch_state, 1, &keys, rng), var_r_vals, Self::format_num(1, rng), var_r_len, var_t, Self::obfuscate_num_depth(fetch_state, 1, &keys, rng)
+        out.push_str(&format!("if {} then if {} then {},{}=false,false;{}={};else return {}({},{},{})end else {}={};end ", 
+            var_r_flg, var_tail_flg, var_tail_flg, var_r_flg, var_t, Self::obfuscate_num_depth(fetch_state, 1, &keys, rng), var_unpack, var_r_vals, Self::format_num(1, rng), var_r_len, var_t, Self::obfuscate_num_depth(fetch_state, 1, &keys, rng)
         ));
 
         out.push_str("end end ");
