@@ -99,15 +99,36 @@ impl ControlFlowBuilder {
         var_unpack: &str,
         rng: &mut GenRng,
     ) -> String {
+        // grp1/grp2 与所有槽位键必须互不相同：
+        // 若 grp1 == grp2，`p[g2]={}` 会清空刚写入 p[g1] 的 add/bxor/band 槽位，
+        // 导致 VM 初始化表整体缺失，解码必然崩溃（本次排查到的偶发故障根因）。
+        let mut taken: Vec<u64> = Vec::new();
+        let mut distinct = |rng: &mut GenRng| -> u64 {
+            loop {
+                let v = rng.range(0x10, 0x7F) as u64;
+                if !taken.contains(&v) {
+                    taken.push(v);
+                    return v;
+                }
+            }
+        };
+        let grp1 = distinct(rng);
+        let grp2 = distinct(rng);
+        let key_bx = distinct(rng);
+        let key_ba = distinct(rng);
+        let key_add = distinct(rng);
+        let key_bs = distinct(rng);
+        let key_ba2 = distinct(rng);
+        let key_bs2 = distinct(rng);
         let keys = CipherKeys {
-            grp1: rng.range(0x10, 0x7F) as u64,
-            grp2: rng.range(0x10, 0x7F) as u64,
-            key_bx: rng.range(0x10, 0x7F) as u64,
-            key_ba: rng.range(0x10, 0x7F) as u64,
-            key_add: rng.range(0x10, 0x7F) as u64,
-            key_bs: rng.range(0x10, 0x7F) as u64,
-            key_ba2: rng.range(0x10, 0x7F) as u64,
-            key_bs2: rng.range(0x10, 0x7F) as u64,
+            grp1,
+            grp2,
+            key_bx,
+            key_ba,
+            key_add,
+            key_bs,
+            key_ba2,
+            key_bs2,
             tbl_p: rng.name(),
         };
 

@@ -2,6 +2,7 @@
 use std::time::SystemTime;
 use rand::{rngs::StdRng, Rng, SeedableRng, random};
 
+use crate::VM::cf_wrap;
 use crate::VM::Control_Flow::Control_flow::ControlFlowBuilder;
 use crate::VM::VM_Backend::Generator::GenRng;
 use crate::VM::VM_Backend::Sandbox::generate_sandbox;
@@ -335,16 +336,13 @@ impl Packer {
         let tamper_val = rng.range(10, 50);
 
         let mut insts_init = Vec::new();
-        insts_init.push(format!("s.insts[{}]={{{}}};", pc_state0, op_state0));
-        insts_init.push(format!("s.insts[{}]={{{}}};", pc_state1, op_state1));
-        insts_init.push(format!("s.insts[{}]={{{}}};", pc_state2, op_state2));
-        insts_init.push(format!("s.insts[{}]={{{}}};", pc_state3, op_state3));
-        insts_init.push(format!("s.insts[{}]={{{}}};", pc_state4, op_state4));
-        insts_init.push(format!("s.insts[{}]={{{}}};", pc_state5, op_state5));
-        insts_init.push(format!("s.insts[{}]={{{}}};", pc_state6, op_state6));
-        insts_init.push(format!("s.insts[{}]={{{}}};", pc_state7, op_state7));
-        insts_init.push(format!("s.insts[{}]={{{}}};", pc_state8, op_state8));
-        insts_init.push(format!("s.insts[{}]={{{}}};", pc_state9, op_state9));
+        for (pc, op) in [
+            (pc_state0, op_state0), (pc_state1, op_state1), (pc_state2, op_state2), (pc_state3, op_state3),
+            (pc_state4, op_state4), (pc_state5, op_state5), (pc_state6, op_state6), (pc_state7, op_state7),
+            (pc_state8, op_state8), (pc_state9, op_state9),
+        ] {
+            insts_init.push(cf_wrap::wrap_stmt(&format!("s.insts[{}]={{{}}};", pc, op), rng));
+        }
 
         let n_insts = insts_init.len();
         let mut insts_states: Vec<usize> = (1..=n_insts+1).collect();
@@ -354,7 +352,7 @@ impl Packer {
         }
         
         let mut init_insts_loop = String::new();
-        init_insts_loop.push_str(&format!("st={};while not(false or false) do ", insts_states[0]));
+        init_insts_loop.push_str(&format!("st={};while {} do ", insts_states[0], cf_wrap::const_true(rng)));
         for (i, inst) in insts_init.iter().enumerate() {
             let curr_st = insts_states[i];
             let next_st = insts_states[i+1];
@@ -366,17 +364,103 @@ impl Packer {
         }
         init_insts_loop.push_str("else break end end;");
 
+        // 每个 handler 的所有功能语句都被包进随机控制流（cf_wrap）
         let mut handlers_init = Vec::new();
-        handlers_init.push(format!("s.handlers[{}+{}] = function(inst) s.bc = 8; s.res = {{}}; s.pc = {}; end;", op_state0, tamper_val, pc_state1));
-        handlers_init.push(format!("s.handlers[{}+{}] = function(inst) if s.bc > 7 then s.pc = {} else s.pc = {} end end;", op_state1, tamper_val, pc_state2, pc_state3));
-        handlers_init.push(format!("s.handlers[{}+{}] = function(inst) s.f = q:{}(s); if not s.f then s.r_flg = true; s.r_vals = {{s.concat(s.res)}}; s.r_len = 1; return end; s.bc = 0; s.pc = {}; end;", op_state2, tamper_val, m_next, pc_state3));
-        handlers_init.push(format!("s.handlers[{}+{}] = function(inst) if (s.f % 2) == 1 then s.pc = {} else s.pc = {} end end;", op_state3, tamper_val, pc_state4, pc_state5));
-        handlers_init.push(format!("s.handlers[{}+{}] = function(inst) s.u = q:{}(s); if not s.u then s.r_flg = true; s.r_vals = {{s.concat(s.res)}}; s.r_len = 1; return end; s.res[#s.res+1] = s.char(s.u); s.pc = {}; end;", op_state4, tamper_val, m_next, pc_state9));
-        handlers_init.push(format!("s.handlers[{}+{}] = function(inst) s.p1 = q:{}(s); if not s.p1 then s.r_flg = true; s.r_vals = {{s.concat(s.res)}}; s.r_len = 1; return end; s.pc = {}; end;", op_state5, tamper_val, m_next, pc_state6));
-        handlers_init.push(format!("s.handlers[{}+{}] = function(inst) s.p2 = q:{}(s); if not s.p2 then s.r_flg = true; s.r_vals = {{s.concat(s.res)}}; s.r_len = 1; return end; s.pc = {}; end;", op_state6, tamper_val, m_next, pc_state7));
-        handlers_init.push(format!("s.handlers[{}+{}] = function(inst) s.w = q:{}(s); if not s.w then s.r_flg = true; s.r_vals = {{s.concat(s.res)}}; s.r_len = 1; return end; s.pc = {}; end;", op_state7, tamper_val, m_next, pc_state8));
-        handlers_init.push(format!("s.handlers[{}+{}] = function(inst, iter) s.ptr = #s.res - (s.p1 * 256 + s.p2) + 1; iter = 0; while true do if iter >= s.w + 3 then break end; s.res[#s.res+1] = s.res[s.ptr + iter]; iter = iter + 1; end; s.pc = {}; end;", op_state8, tamper_val, pc_state9));
-        handlers_init.push(format!("s.handlers[{}+{}] = function(inst) s.f = s.floor(s.f / 2); s.bc = s.bc + 1; s.pc = {}; end;", op_state9, tamper_val, pc_state1));
+        handlers_init.push(format!(
+            "s.handlers[{}+{}] = function(inst) {} end;",
+            op_state0, tamper_val,
+            cf_wrap::wrap_all(&[
+                "s.bc = 8;".into(),
+                "s.res = {};".into(),
+                format!("s.pc = {};", pc_state1),
+            ], rng)
+        ));
+        handlers_init.push(format!(
+            "s.handlers[{}+{}] = function(inst) if s.bc > 7 then {} else {} end end;",
+            op_state1, tamper_val,
+            cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state2)], rng),
+            cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state3)], rng)
+        ));
+        handlers_init.push(format!(
+            "s.handlers[{}+{}] = function(inst) {} if not s.f then {} return end; {} {} end;",
+            op_state2, tamper_val,
+            cf_wrap::wrap_all(&[format!("s.f = q:{}(s);", m_next)], rng),
+            cf_wrap::wrap_all(&[
+                "s.r_flg = true;".into(),
+                "s.r_vals = {s.concat(s.res)};".into(),
+                "s.r_len = 1;".into(),
+            ], rng),
+            cf_wrap::wrap_all(&["s.bc = 0;".into()], rng),
+            cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state3)], rng)
+        ));
+        handlers_init.push(format!(
+            "s.handlers[{}+{}] = function(inst) if (s.f % 2) == 1 then {} else {} end end;",
+            op_state3, tamper_val,
+            cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state4)], rng),
+            cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state5)], rng)
+        ));
+        handlers_init.push(format!(
+            "s.handlers[{}+{}] = function(inst) {} if not s.u then {} return end; {} {} end;",
+            op_state4, tamper_val,
+            cf_wrap::wrap_all(&[format!("s.u = q:{}(s);", m_next)], rng),
+            cf_wrap::wrap_all(&[
+                "s.r_flg = true;".into(),
+                "s.r_vals = {s.concat(s.res)};".into(),
+                "s.r_len = 1;".into(),
+            ], rng),
+            cf_wrap::wrap_all(&["s.res[#s.res+1] = s.char(s.u);".into()], rng),
+            cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state9)], rng)
+        ));
+        handlers_init.push(format!(
+            "s.handlers[{}+{}] = function(inst) {} if not s.p1 then {} return end; {} end;",
+            op_state5, tamper_val,
+            cf_wrap::wrap_all(&[format!("s.p1 = q:{}(s);", m_next)], rng),
+            cf_wrap::wrap_all(&[
+                "s.r_flg = true;".into(),
+                "s.r_vals = {s.concat(s.res)};".into(),
+                "s.r_len = 1;".into(),
+            ], rng),
+            cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state6)], rng)
+        ));
+        handlers_init.push(format!(
+            "s.handlers[{}+{}] = function(inst) {} if not s.p2 then {} return end; {} end;",
+            op_state6, tamper_val,
+            cf_wrap::wrap_all(&[format!("s.p2 = q:{}(s);", m_next)], rng),
+            cf_wrap::wrap_all(&[
+                "s.r_flg = true;".into(),
+                "s.r_vals = {s.concat(s.res)};".into(),
+                "s.r_len = 1;".into(),
+            ], rng),
+            cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state7)], rng)
+        ));
+        handlers_init.push(format!(
+            "s.handlers[{}+{}] = function(inst) {} if not s.w then {} return end; {} end;",
+            op_state7, tamper_val,
+            cf_wrap::wrap_all(&[format!("s.w = q:{}(s);", m_next)], rng),
+            cf_wrap::wrap_all(&[
+                "s.r_flg = true;".into(),
+                "s.r_vals = {s.concat(s.res)};".into(),
+                "s.r_len = 1;".into(),
+            ], rng),
+            cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state8)], rng)
+        ));
+        handlers_init.push(format!(
+            "s.handlers[{}+{}] = function(inst, iter) {} {} while {} do if iter >= s.w + 3 then break end; {} {} end; {} end;",
+            op_state8, tamper_val,
+            cf_wrap::wrap_all(&["s.ptr = #s.res - (s.p1 * 256 + s.p2) + 1;".into()], rng),
+            cf_wrap::wrap_all(&["iter = 0;".into()], rng),
+            cf_wrap::const_true(rng),
+            cf_wrap::wrap_all(&["s.res[#s.res+1] = s.res[s.ptr + iter];".into()], rng),
+            cf_wrap::wrap_all(&["iter = iter + 1;".into()], rng),
+            cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state9)], rng)
+        ));
+        handlers_init.push(format!(
+            "s.handlers[{}+{}] = function(inst) {} {} {} end;",
+            op_state9, tamper_val,
+            cf_wrap::wrap_all(&["s.f = s.floor(s.f / 2);".into()], rng),
+            cf_wrap::wrap_all(&["s.bc = s.bc + 1;".into()], rng),
+            cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state1)], rng)
+        ));
 
         let n_handlers = handlers_init.len();
         let mut handlers_states: Vec<usize> = (1..=n_handlers+1).collect();
@@ -386,7 +470,7 @@ impl Packer {
         }
         
         let mut init_handlers_loop = String::new();
-        init_handlers_loop.push_str(&format!("st={};while true do ", handlers_states[0]));
+        init_handlers_loop.push_str(&format!("st={};while {} do ", handlers_states[0], cf_wrap::const_true(rng)));
         for (i, h) in handlers_init.iter().enumerate() {
             let curr_st = handlers_states[i];
             let next_st = handlers_states[i+1];
@@ -443,132 +527,125 @@ impl Packer {
         }
         let combined_key_expr = key_parts_exprs.join(",");
 
-        let script = format!("
-local function {f_entry}({v_data})
-    return ({{
-        {m_bxor} = function(q, s, a, b, ra, rb, p, c, rra, rrb, k_bxor)
-            k_bxor = a * 256 + b;
-            local to=0 and true;
-            if s.memo[k_bxor] then return s.memo[k_bxor] end;
-            ra, rb, p, c = a, b, 1, 0;
-            while to do
-                if ra > 0 or rb > 0 then
-                    rra, rrb = ra % 2, rb % 2;
-                    if rra ~= rrb then c = c + p end;
-                    ra, rb, p = s.floor((ra - rra) / 2), s.floor((rb - rrb) / 2), p * 2;
-                else break end;
-            end;
-            s.memo[k_bxor] = c;
-            local function hg(dr, ...) repeat return c or nil until dr end;local df=hg(true)
-            return df;
-        end,
-        {m_next} = function(q, s, r, c, e, v, x, y, z, i, d, b, k, B, F)
-    B, F = s.byte, s.floor;
-    i, d, b, k = s.idx, s.data, s.buf, s.kidx;
-    if #b > 0 then
-        r = s.remove(b, 1);
-        c = q:{m_bxor}(s, r, s.k[k + 1]);
-        s.kidx = (k + 1) % 16;
-        return c;
-    end;
-    if i > s.len then return nil end;
-    e = s.len - i + 1;
-    if e >= 5 then
-        v = (B(d, i)-33) + (B(d, i+1)-33)*85 + (B(d, i+2)-33)*7225 + (B(d, i+3)-33)*614125 + (B(d, i+4)-33)*52200625;
-        z, y, x = v % 256, F(v / 256) % 256, F(v / 65536) % 256;
-        v = F(v / 16777216);
-        b[1], b[2], b[3], b[4] = v, x, y, z;
-        i = i + 5;
-    elseif e >= 4 then
-        v = (B(d, i)-33) + (B(d, i+1)-33)*85 + (B(d, i+2)-33)*7225 + (B(d, i+3)-33)*614125;
-        y, x = v % 256, F(v / 256) % 256;
-        v = F(v / 65536);
-        b[1], b[2], b[3] = v, x, y;
-        i = i + 4;
-    elseif e >= 3 then
-        v = (B(d, i)-33) + (B(d, i+1)-33)*85 + (B(d, i+2)-33)*7225;
-        x = v % 256;
-        v = F(v / 256);
-        b[1], b[2] = v, x;
-        i = i + 3;
-    elseif e >= 2 then
-        v = (B(d, i)-33) + (B(d, i+1)-33)*85;
-        b[1] = v;
-        i = i + 2;
-    else
-        i = i + 1;
-    end;
-    s.idx = i;
-    return q:{m_next}(s);
-end,
-        {m_init_map} = function(q, s, parts, i, kparts, kstr)
-            kparts = {{{combined_key_expr}}};
-            kstr = \"\";
-            i = 1;
-            while true do
-                if i > {num_actual_key_parts} then break end;
-                kstr = kstr .. kparts[i];
-                i = i + 1;
-            end;
-            i = 1;
-            while true do
-                if i > #kstr then break end;
-                s.k[i] = s.byte(kstr, i);
-                i = i + 1;
-            end;
-        end,
-        {m_init_insts} = function(q, s, st)
-            {init_insts_loop}
-        end,
-        {m_init_handlers} = function(q, s, st)
-            {init_handlers_loop}
-        end,
-        {m_run} = function(q, s)
-            {router_code}
-        end,
-        {m_main} = function(q, data)
-            local insert, load_func, gmatch = q.{k_ins}, q.{k_lf}, q.{k_gm};
-            return (function(s)
-                q:{m_init_map}(s);
-                q:{m_init_insts}(s);
-                q:{m_init_handlers}(s);
-                
-                local parts = {{}}
-                for part in gmatch(s.data, \"[^~]+\") do
-                    insert(parts, part)
-                end
-                
-                s.data = parts[1];
-                s.len = #s.data;
-                local sb_expr = q:{m_run}(s);
-                
-                local get_sb_code = load_func(\"return \" .. sb_expr);
-                local sb_code = get_sb_code and get_sb_code() or \"\";
-                local env_maker_chunk = load_func(sb_code, \"{sb_chunk}\");
-                
-                local stage2 = function()
-                    s.data = parts[2];
-                    s.len = #s.data;
-                    s.idx = 1; s.kidx = 0; s.buf = {{}}; s.res = {{}};
-                    s.pc = {pc_state0}; s.bc = 0; s.f = 0; s.p1 = 0; s.p2 = 0; s.w = 0; s.u = 0; s.ptr = 0;
-                    s.r_flg = false; s.r_vals = {{}}; s.r_len = 0; s.tail_flg = false;
-                    return q:{m_run}(s);
-                end
-                
-                local env_maker = env_maker_chunk and env_maker_chunk(stage2) or stage2;
-                return env_maker();
-            end)({{
-                data = data, pc = {pc_state0}, insts = {{}}, tamper = {tamper_val}, handlers = {{}},
-                r_flg = false, r_vals = {{}}, r_len = 0, tail_flg = false,
-                idx = 1, len = #data, k = {{}}, kidx = 0, buf = {{}}, memo = {{}},
-                unpack = q.{k_un}, char = q.{k_ch}, byte = q.{k_by}, floor = q.{k_fl}, insert = q.{k_ins}, concat = q.{k_cat}, remove = q.{k_rem}, reverse = q.{k_rev},
-                bc = 0, res = {{}}, f = 0, p1 = 0, p2 = 0, w = 0, u = 0, ptr = 0
-            }});
-        end
-    , {k_un} = unpack or table.unpack, {k_ch} = string.char, {k_by} = string.byte, {k_fl} = math.floor, {k_ins} = table.insert, {k_cat} = table.concat, {k_rem} = table.remove, {k_rev} = string.reverse, {k_lf} = loadstring or load, {k_gm} = string.gmatch
-    }}):{m_main}({v_data});
-end
-");
+        // ===== 解码器函数体：所有功能语句都包进随机控制流（cf_wrap） =====
+        let mut sb = String::with_capacity(32768);
+        sb.push_str(&format!("\nlocal function {f_entry}({v_data})\n    local _;\n    return ({{\n"));
+        // ---------- m_bxor ----------
+        sb.push_str(&format!("        {m_bxor} = function(q, s, a, b, ra, rb, p, c, rra, rrb, k_bxor)\n"));
+        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("k_bxor = a * 256 + b;", rng)));
+        sb.push_str("            _ = s.memo[k_bxor];\n            if _ then return _ end;\n");
+        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("ra, rb, p, c = a, b, 1, 0;", rng)));
+        sb.push_str(&format!("            while {} do\n", cf_wrap::const_true(rng)));
+        sb.push_str("                if ra > 0 or rb > 0 then\n");
+        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("rra, rrb = ra % 2, rb % 2;", rng)));
+        sb.push_str("                    if rra ~= rrb then\n");
+        sb.push_str(&format!("                        {}\n", cf_wrap::wrap_stmt("c = c + p;", rng)));
+        sb.push_str("                    end\n");
+        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("ra, rb, p = s.floor((ra - rra) / 2), s.floor((rb - rrb) / 2), p * 2;", rng)));
+        sb.push_str("                else break end;\n            end;\n");
+        sb.push_str("            local function hg(dr, ...) repeat return c or nil until dr end;local df=hg(true)\n");
+        sb.push_str("            return df;\n        end,\n");
+        // ---------- m_next ----------
+        sb.push_str(&format!("        {m_next} = function(q, s, r, c, e, v, x, y, z, i, d, b, k, B, F)\n"));
+        sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt("B, F = s.byte, s.floor;", rng)));
+        sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt("i, d, b, k = s.idx, s.data, s.buf, s.kidx;", rng)));
+        sb.push_str("    if #b > 0 then\n");
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("r = s.remove(b, 1);", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt(&format!("c = q:{m_bxor}(s, r, s.k[k + 1]);"), rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("s.kidx = (k + 1) % 16;", rng)));
+        sb.push_str("        return c;\n    end;\n");
+        sb.push_str("    if i > s.len then return nil end;\n");
+        sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt("e = s.len - i + 1;", rng)));
+        sb.push_str("    if e >= 5 then\n");
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d, i)-33) + (B(d, i+1)-33)*85 + (B(d, i+2)-33)*7225 + (B(d, i+3)-33)*614125 + (B(d, i+4)-33)*52200625;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("z, y, x = v % 256, F(v / 256) % 256, F(v / 65536) % 256;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = F(v / 16777216);", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b[1], b[2], b[3], b[4] = v, x, y, z;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 5;", rng)));
+        sb.push_str("    elseif e >= 4 then\n");
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d, i)-33) + (B(d, i+1)-33)*85 + (B(d, i+2)-33)*7225 + (B(d, i+3)-33)*614125;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("y, x = v % 256, F(v / 256) % 256;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = F(v / 65536);", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b[1], b[2], b[3] = v, x, y;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 4;", rng)));
+        sb.push_str("    elseif e >= 3 then\n");
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d, i)-33) + (B(d, i+1)-33)*85 + (B(d, i+2)-33)*7225;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("x = v % 256;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = F(v / 256);", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b[1], b[2] = v, x;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 3;", rng)));
+        sb.push_str("    elseif e >= 2 then\n");
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d, i)-33) + (B(d, i+1)-33)*85;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b[1] = v;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 2;", rng)));
+        sb.push_str("    else\n");
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 1;", rng)));
+        sb.push_str("    end;\n");
+        sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt("s.idx = i;", rng)));
+        sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt(&format!("return q:{m_next}(s);"), rng)));
+        sb.push_str("        end,\n");
+        // ---------- m_init_map ----------
+        sb.push_str(&format!("        {m_init_map} = function(q, s, parts, i, kparts, kstr)\n"));
+        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt(&format!("kparts = {{{combined_key_expr}}};"), rng)));
+        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("kstr = \"\";", rng)));
+        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("i = 1;", rng)));
+        sb.push_str(&format!("            while {} do\n", cf_wrap::const_true(rng)));
+        sb.push_str(&format!("                if i > {num_actual_key_parts} then break end;\n"));
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt("kstr = kstr .. kparts[i];", rng)));
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt("i = i + 1;", rng)));
+        sb.push_str("            end;\n");
+        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("i = 1;", rng)));
+        sb.push_str(&format!("            while {} do\n", cf_wrap::const_true(rng)));
+        sb.push_str("                if i > #kstr then break end;\n");
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt("s.k[i] = s.byte(kstr, i);", rng)));
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt("i = i + 1;", rng)));
+        sb.push_str("            end\n        end,\n");
+        // ---------- m_init_insts / m_init_handlers ----------
+        sb.push_str(&format!("        {m_init_insts} = function(q, s, st)\n            {init_insts_loop}        end,\n"));
+        sb.push_str(&format!("        {m_init_handlers} = function(q, s, st)\n            {init_handlers_loop}        end,\n"));
+        // ---------- m_run ----------
+        sb.push_str(&format!("        {m_run} = function(q, s)\n            {}\n        end,\n", cf_wrap::wrap_stmt(&router_code, rng)));
+        // ---------- m_main ----------
+        sb.push_str(&format!("        {m_main} = function(q, data)\n"));
+        sb.push_str(&format!("            local insert, load_func, gmatch = q.{k_ins}, q.{k_lf}, q.{k_gm};\n"));
+        sb.push_str("            return (function(s)\n");
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt(&format!("q:{m_init_map}(s);"), rng)));
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt(&format!("q:{m_init_insts}(s);"), rng)));
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt(&format!("q:{m_init_handlers}(s);"), rng)));
+        sb.push_str("                local parts = {}\n");
+        sb.push_str("                for part in gmatch(s.data, \"[^~]+\") do\n");
+        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("insert(parts, part)", rng)));
+        sb.push_str("                end\n");
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt("s.data = parts[1];", rng)));
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt("s.len = #s.data;", rng)));
+        sb.push_str("                local sb_expr = false;\n");
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt(&format!("sb_expr = q:{m_run}(s);"), rng)));
+        sb.push_str("                local get_sb_code = false;\n");
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt("get_sb_code = load_func(\"return \" .. sb_expr);", rng)));
+        sb.push_str("                local sb_code = false;\n");
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt("sb_code = get_sb_code and get_sb_code() or \"\";", rng)));
+        sb.push_str("                local env_maker_chunk = false;\n");
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt(&format!("env_maker_chunk = load_func(sb_code, \"{sb_chunk}\");"), rng)));
+        sb.push_str("                local stage2 = function()\n");
+        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.data = parts[2];", rng)));
+        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.len = #s.data;", rng)));
+        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.idx = 1; s.kidx = 0;", rng)));
+        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.buf = {}; s.res = {};", rng)));
+        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt(&format!("s.pc = {pc_state0}; s.bc = 0; s.f = 0; s.p1 = 0; s.p2 = 0; s.w = 0; s.u = 0; s.ptr = 0;"), rng)));
+        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.r_flg = false; s.r_vals = {}; s.r_len = 0; s.tail_flg = false;", rng)));
+        sb.push_str(&format!("                    return q:{m_run}(s);\n"));
+        sb.push_str("                end\n");
+        sb.push_str("                local env_maker = false;\n");
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt("env_maker = env_maker_chunk and env_maker_chunk(stage2) or stage2;", rng)));
+        sb.push_str("                return env_maker();\n            end)({\n");
+        sb.push_str(&format!("                data = data, pc = {pc_state0}, insts = {{}}, tamper = {tamper_val}, handlers = {{}},\n"));
+        sb.push_str("                r_flg = false, r_vals = {}, r_len = 0, tail_flg = false,\n");
+        sb.push_str("                idx = 1, len = #data, k = {}, kidx = 0, buf = {}, memo = {},\n");
+        sb.push_str(&format!("                unpack = q.{k_un}, char = q.{k_ch}, byte = q.{k_by}, floor = q.{k_fl}, insert = q.{k_ins}, concat = q.{k_cat}, remove = q.{k_rem}, reverse = q.{k_rev},\n"));
+        sb.push_str("                bc = 0, res = {}, f = 0, p1 = 0, p2 = 0, w = 0, u = 0, ptr = 0\n");
+        sb.push_str("            });\n        end\n");
+        sb.push_str(&format!("    , {k_un} = unpack or table.unpack, {k_ch} = string.char, {k_by} = string.byte, {k_fl} = math.floor, {k_ins} = table.insert, {k_cat} = table.concat, {k_rem} = table.remove, {k_rev} = string.reverse, {k_lf} = loadstring or load, {k_gm} = string.gmatch\n    }}):{m_main}({v_data});\nend\n"));
+        let script = sb;
         let post_pairs: Vec<(&str, &str)> = vec![
             ("data", f_data.as_str()),
             ("pc", f_pc.as_str()),
