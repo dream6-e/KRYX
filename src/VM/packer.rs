@@ -531,10 +531,14 @@ impl Packer {
         let mut sb = String::with_capacity(32768);
         sb.push_str(&format!("\nlocal function {f_entry}({v_data})\n    local _;\n    return ({{\n"));
         // ---------- m_bxor ----------
-        sb.push_str(&format!("        {m_bxor} = function(q, s, a_, b_, ra, rb, p, c_, rra, rrb, k_bxor)\\n"));
-        sb.push_str(&format!("            {}\\n", cf_wrap::wrap_stmt("k_bxor = a_ * 256 + b_;", rng)));
-        sb.push_str(&format!("            {}\\n", cf_wrap::wrap_stmt("_ = s.memo[k_bxor]; if _ then return _ end", rng)));
-        sb.push_str(&format!("            {}\\n", cf_wrap::wrap_stmt("ra, rb, p, c_ = a_, b_, 1, 0;", rng)));
+        sb.push_str(&format!("        {m_bxor} = function(q, s, a_, b_, ra, rb, p, c_, rra, rrb, k_bxor)
+"));
+        sb.push_str(&format!("            {}
+", cf_wrap::wrap_stmt("k_bxor = a_ * 256 + b_;", rng)));
+        sb.push_str(&format!("            {}
+", cf_wrap::wrap_stmt("_ = s.memo[k_bxor]; if _ then return _ end", rng)));
+        sb.push_str(&format!("            {}
+", cf_wrap::wrap_stmt("ra, rb, p, c_ = a_, b_, 1, 0;", rng)));
         let while_guard = cf_wrap::const_true(rng);
         let while_inner = cf_wrap::wrap_stmt(
             &format!("if ra > 0 or rb > 0 then {} else break end",
@@ -542,14 +546,21 @@ impl Packer {
             ),
             rng,
         );
-        sb.push_str(&format!("            {}\\n", cf_wrap::wrap_stmt(&format!("while {} do {} end", while_guard, while_inner), rng)));
-        sb.push_str(&format!("            {}\\n", cf_wrap::wrap_stmt("local function hg(dr, ...) repeat return c_ or nil until dr end;local df=hg(true)", rng)));
-        sb.push_str(&format!("            {}\\n", cf_wrap::wrap_stmt("return df", rng)));
-        sb.push_str("        end,\\n");
+        sb.push_str(&format!("            {}
+", cf_wrap::wrap_stmt(&format!("while {} do {} end", while_guard, while_inner), rng)));
+        sb.push_str(&format!("            {}
+", cf_wrap::wrap_stmt("local function hg(dr, ...) repeat return c_ or nil until dr end;local df=hg(true)", rng)));
+        sb.push_str(&format!("            {}
+", cf_wrap::wrap_stmt("return df", rng)));
+        sb.push_str("        end,
+");
         // ---------- m_next ----------
-        sb.push_str(&format!("        {m_next} = function(q, s, r, c_, e, v, x, y, z, i, d_, b_, k, B, F)\\n"));
-        sb.push_str(&format!("    {}\\n", cf_wrap::wrap_stmt("B, F = s.byte, s.floor;", rng)));
-        sb.push_str(&format!("    {}\\n", cf_wrap::wrap_stmt("i, d_, b_, k = s.idx, s.data, s.buf, s.kidx;", rng)));
+        sb.push_str(&format!("        {m_next} = function(q, s, r, c_, e, v, x, y, z, i, d_, b_, k, B, F)
+"));
+        sb.push_str(&format!("    {}
+", cf_wrap::wrap_stmt("B, F = s.byte, s.floor;", rng)));
+        sb.push_str(&format!("    {}
+", cf_wrap::wrap_stmt("i, d_, b_, k = s.idx, s.data, s.buf, s.kidx;", rng)));
         let mut if_b_body = Vec::new();
         if_b_body.push(cf_wrap::wrap_stmt("r = s.remove(b_, 1);", rng));
         if_b_body.push(cf_wrap::wrap_stmt(&format!("c_ = q:{m_bxor}(s, r, s.k[k + 1]);"), rng));
@@ -559,9 +570,12 @@ impl Packer {
             &format!("if #b_ > 0 then {} end", cf_wrap::wrap_all(&if_b_body, rng)),
             rng,
         );
-        sb.push_str(&format!("    {}\\n", if_b_stmt));
-        sb.push_str(&format!("    {}\\n", cf_wrap::wrap_stmt("if i > s.len then return nil end", rng)));
-        sb.push_str(&format!("    {}\\n", cf_wrap::wrap_stmt("e = s.len - i + 1;", rng)));
+        sb.push_str(&format!("    {}
+", if_b_stmt));
+        sb.push_str(&format!("    {}
+", cf_wrap::wrap_stmt("if i > s.len then return nil end", rng)));
+        sb.push_str(&format!("    {}
+", cf_wrap::wrap_stmt("e = s.len - i + 1;", rng)));
         let mut chain_body_5 = Vec::new();
         chain_body_5.push(cf_wrap::wrap_stmt("v = (B(d_, i)-33) + (B(d_, i+1)-33)*85 + (B(d_, i+2)-33)*7225 + (B(d_, i+3)-33)*614125 + (B(d_, i+4)-33)*52200625;", rng));
         chain_body_5.push(cf_wrap::wrap_stmt("z, y, x = v % 256, F(v / 256) % 256, F(v / 65536) % 256;", rng));
@@ -597,16 +611,24 @@ impl Packer {
             ),
             rng,
         );
-        sb.push_str(&format!("    {}\\n", chain));
-        sb.push_str(&format!("    {}\\n", cf_wrap::wrap_stmt("s.idx = i;", rng)));
-        sb.push_str(&format!("    {}\\n", cf_wrap::wrap_stmt(&format!("return q:{m_next}(s);"), rng)));
-        sb.push_str("        end,\\n");
+        sb.push_str(&format!("    {}
+", chain));
+        sb.push_str(&format!("    {}
+", cf_wrap::wrap_stmt("s.idx = i;", rng)));
+        sb.push_str(&format!("    {}
+", cf_wrap::wrap_stmt(&format!("return q:{m_next}(s);"), rng)));
+        sb.push_str("        end,
+");
 
         // ---------- m_init_map ----------
-        sb.push_str(&format!("        {m_init_map} = function(q, s, parts, i, kparts, kstr)\\n"));
-        sb.push_str(&format!("            {}\\n", cf_wrap::wrap_stmt(&format!("kparts = {{{combined_key_expr}}};"), rng)));
-        sb.push_str(&format!("            {}\\n", cf_wrap::wrap_stmt("kstr = \"\";", rng)));
-        sb.push_str(&format!("            {}\\n", cf_wrap::wrap_stmt("i = 1;", rng)));
+        sb.push_str(&format!("        {m_init_map} = function(q, s, parts, i, kparts, kstr)
+"));
+        sb.push_str(&format!("            {}
+", cf_wrap::wrap_stmt(&format!("kparts = {{{combined_key_expr}}};"), rng)));
+        sb.push_str(&format!("            {}
+", cf_wrap::wrap_stmt("kstr = \"\";", rng)));
+        sb.push_str(&format!("            {}
+", cf_wrap::wrap_stmt("i = 1;", rng)));
         // while true do ... break ... end
         let mut while1_body = Vec::new();
         while1_body.push(cf_wrap::wrap_stmt(&format!("if i > {num_actual_key_parts} then break end "), rng));
@@ -616,8 +638,10 @@ impl Packer {
             &format!("while {} do {} end ", cf_wrap::const_true(rng), cf_wrap::wrap_all(&while1_body, rng)),
             rng,
         );
-        sb.push_str(&format!("            {}\\n", while1));
-        sb.push_str(&format!("            {}\\n", cf_wrap::wrap_stmt("i = 1;", rng)));
+        sb.push_str(&format!("            {}
+", while1));
+        sb.push_str(&format!("            {}
+", cf_wrap::wrap_stmt("i = 1;", rng)));
         // while true do ... break ... end
         let mut while2_body = Vec::new();
         while2_body.push(cf_wrap::wrap_stmt("if i > #kstr then break end ", rng));
@@ -627,8 +651,10 @@ impl Packer {
             &format!("while {} do {} end ", cf_wrap::const_true(rng), cf_wrap::wrap_all(&while2_body, rng)),
             rng,
         );
-        sb.push_str(&format!("            {}\\n", while2));
-        sb.push_str("        end,\\n");
+        sb.push_str(&format!("            {}
+", while2));
+        sb.push_str("        end,
+");
         // ---------- m_init_insts / m_init_handlers ----------
         sb.push_str(&format!("        {m_init_insts} = function(q, s, st)\n            {init_insts_loop}        end,\n"));
         sb.push_str(&format!("        {m_init_handlers} = function(q, s, st)\n            {init_handlers_loop}        end,\n"));

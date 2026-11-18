@@ -194,7 +194,7 @@ fn gen_bool(rng: &mut GenRng, v: Option<i64>, force: bool) -> String {
                 if v.is_some() && rng.range(0, 10) < 6 { v } else { None }
             };
             let (txt, tr) = atom(rng, leaf_v);
-            let nots = rng.range(0, 4); // 0..2 层 not
+            let nots = rng.range(0, 2); // 0..1 层 not（原子层）
             let mut t = tr;
             let mut s = txt;
             for _ in 0..nots {
@@ -221,7 +221,9 @@ fn gen_bool(rng: &mut GenRng, v: Option<i64>, force: bool) -> String {
         if n_leaves > 1 && rng.range(0, 2) == 0 {
             expr = format!("({})", expr);
         }
-        if truth != force {
+        // 若任何原子已带 not，整体不再套 not，避免嵌套层数超过 2
+        let any_leaf_has_not = leaves.iter().any(|(s, _)| s.starts_with("not("));
+        if truth != force && !any_leaf_has_not {
             expr = format!("not({})", expr);
         }
         expr
