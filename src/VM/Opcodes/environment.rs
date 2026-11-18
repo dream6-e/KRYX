@@ -51,14 +51,14 @@ pub fn generate(m: &[Vec<u32>], cfg: &OpcodeConfig, rng: &mut OpcodesRng) -> Str
     let s_b = self_op.raw_inst(3);
     let s_c = self_op.rk(4);
     let s_a = self_op.raw_inst(2);
-    out.push_str(&self_op.build(&format!("local b = {{STK}}[{}]; {{STK}}[{}+1] = b; {{STK}}[{}] = b[{}]", s_b, s_a, s_a, s_c)));
+    out.push_str(&self_op.build(&format!("local b_ = {{STK}}[{}]; {{STK}}[{}+1] = b_; {{STK}}[{}] = b_[{}]", s_b, s_a, s_a, s_c)));
 
     let mut setlist = OpcodeBuilder::new(m[34].clone(), cfg, rng);
     let sl_a = setlist.raw_inst(2);
     let sl_b = setlist.raw_inst(3);
     let sl_c = setlist.raw_inst(4);
     out.push_str(&setlist.build(&format!(
-        "local c = {}; if c == 0 then c = {{INSTS}}[{{PC}}][2]; {{PC}} = {{PC}} + 1 end; local b = {}; if b == 0 then b = {{TOP}} - {} end; local offset = (c - 1) * 50; for j = 1, b do {{STK}}[{}][offset + j] = {{STK}}[{} + j] end; for j = {} + 1, {} + b do {{STK}}[j] = nil end",
+        "local c_ = {}; if c_ == 0 then c_ = {{INSTS}}[{{PC}}][2]; {{PC}} = {{PC}} + 1 end; local b_ = {}; if b_ == 0 then b_ = {{TOP}} - {} end; local offset = (c_ - 1) * 50; for j = 1, b_ do {{STK}}[{}][offset + j] = {{STK}}[{} + j] end; for j = {} + 1, {} + b_ do {{STK}}[j] = nil end",
         sl_c, sl_b, sl_a, sl_a, sl_a, sl_a, sl_a
     )));
 
@@ -104,7 +104,7 @@ pub fn generate(m: &[Vec<u32>], cfg: &OpcodeConfig, rng: &mut OpcodesRng) -> Str
     let nc_b = namecall.raw_inst(3);
     let nc_c = namecall.raw_inst(4);
     let nc_a = namecall.raw_inst(2);
-    out.push_str(&namecall.build(&format!("local b = {{STK}}[{}]; {{STK}}[{}+1] = b; {{STK}}[{}] = b[{{CONSTS}}[{}+1]]", nc_b, nc_a, nc_a, nc_c)));
+    out.push_str(&namecall.build(&format!("local b_ = {{STK}}[{}]; {{STK}}[{}+1] = b_; {{STK}}[{}] = b_[{{CONSTS}}[{}+1]]", nc_b, nc_a, nc_a, nc_c)));
 
     let mut gettablestr = OpcodeBuilder::new(m[54].clone(), cfg, rng);
     let gts_b = gettablestr.raw_inst(3);

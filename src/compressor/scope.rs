@@ -10,6 +10,8 @@ pub struct ScopeResolver {
     pub intervals: HashMap<VarId, (usize, usize)>,
     /// 每个函数的参数 VarId 列表（按声明顺序），供随机参数覆盖使用
     pub param_lists: Vec<Vec<VarId>>,
+    /// VarId -> 原始变量名（用于 keep-list 直通：`_`/a/b/c/d 不重命名）
+    pub decl_name: HashMap<VarId, String>,
     pos: usize,
 }
 
@@ -21,6 +23,7 @@ impl ScopeResolver {
             var_usage: HashMap::new(),
             intervals: HashMap::new(),
             param_lists: Vec::new(),
+            decl_name: HashMap::new(),
             pos: 0,
         }
     }
@@ -46,6 +49,7 @@ impl ScopeResolver {
         let def = self.tick();
         self.intervals.insert(id, (def, def));
         self.var_usage.insert(id, 0);
+        self.decl_name.insert(id, name.to_string());
 
         if let Some(current) = self.scopes.last_mut() {
             current.insert(name.to_string(), id);

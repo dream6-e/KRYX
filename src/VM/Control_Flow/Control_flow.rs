@@ -151,7 +151,7 @@ impl ControlFlowBuilder {
         out.push_str(&format!("local {}=bxor_fn;local {}=band_fn;local {}=rshift_fn;", fn_bx, fn_ba, fn_bs));
         
         let tbl_def = format!(
-            "local {p}={{}};{p}[{g1}]={{}};{p}[{g1}][{bx}]={fbx};{p}[{g1}][{add}]=function(a,b)return a+b end;{p}[{g1}][{ba}]={fba};{p}[{g2}]={{}};{p}[{g2}][{ba2}]=function(a)return {fba}(a,{max_u32})end;{p}[{g2}][{bs2}]=function(a)return {fbs}(a,{one})end;",
+            "local {p}={{}};{p}[{g1}]={{}};{p}[{g1}][{bx}]={fbx};{p}[{g1}][{add}]=function(a_,b_)return a_+b_ end;{p}[{g1}][{ba}]={fba};{p}[{g2}]={{}};{p}[{g2}][{ba2}]=function(a_)return {fba}(a_,{max_u32})end;{p}[{g2}][{bs2}]=function(a_)return {fbs}(a_,{one})end;",
             p = keys.tbl_p,
             g1 = Self::format_num(keys.grp1 as i64, rng),
             g2 = Self::format_num(keys.grp2 as i64, rng),

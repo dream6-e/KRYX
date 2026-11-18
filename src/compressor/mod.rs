@@ -95,9 +95,12 @@ impl Compressor {
         let mut rng = rng();
         let mut wave1 = Vec::with_capacity(26);
         let mut wave2 = Vec::with_capacity(26);
+        // 保留 a/b/c/d 给 entry 常量局部变量（它们永远不重命名，判断式里直接出现 a>b 之类）
+        let reserved_consts: [char; 4] = ['a', 'b', 'c', 'd'];
         let mut alphabets: Vec<(char, char)> = (b'a'..=b'z')
             .zip(b'A'..=b'Z')
             .map(|(lower, upper)| (lower as char, upper as char))
+            .filter(|(l, _)| !reserved_consts.contains(l))
             .collect();
             
         alphabets.shuffle(&mut rng);
@@ -127,6 +130,15 @@ impl Compressor {
         let mut name_pool = NamePool::new(&single_letters, &ren);
         let mut assigned: Vec<(usize, usize, String)> = Vec::new();
         for (id, _usage, def, last) in live_vars {
+            // keep-list：原始变量名是 _/a/b/c/d 的变量不重命名（scratch 复用设计）
+            if let Some(orig) = resolver.decl_name.get(&id) {
+                let o = orig.as_str();
+                if o == "_" || o == "a" || o == "b" || o == "c" || o == "d" {
+                    mapping.insert(id, o.to_string());
+                    assigned.push((def, last, o.to_string()));
+                    continue;
+                }
+            }
             // 与已分配变量活跃区间重叠的名字不能用
             let mut banned: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for (d2, l2, n2) in &assigned {
@@ -140,7 +152,7 @@ impl Compressor {
         }
         for (&id, &usage) in &resolver.var_usage {
             if usage == 0 {
-                mapping.insert(id, "_".to_string());
+                mapping.insert(id, "\x01".to_string());
             }
         }
 
@@ -174,8 +186,9 @@ impl Compressor {
             }
             if targets.is_empty() { continue; }
             let target = targets[rng.random_range(0..targets.len())];
-            let target_name = mapping.get(&params[target]).cloned().unwrap_or_else(|| "_".to_string());
-            if target_name == "_" { continue; }
+            let target_name = mapping.get(&params[target]).cloned().unwrap_or_else(|| "\x01".to_string());
+            if target_name == "_" || target_name == "a" || target_name == "b" || target_name == "c" || target_name == "d" { continue; }
+            if target_name == "\x01" { continue; }
             mapping.insert(params[unused_i], target_name);
         }
 

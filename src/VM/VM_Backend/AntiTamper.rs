@@ -149,9 +149,9 @@ pub fn generate_split(use_debug: bool, key_var: &str) -> AntiTamperResult {
                 let hash_pcall = poly_hash("pcall");
                 check_code = format!(
                     "local z = setmetatable({{}}, {{ \
-                        [\"__\"..\"add\"]=function(a)return a end, \
-                        [\"__\"..\"sub\"]=function(a)return a end, \
-                        [\"__\"..\"mul\"]=function(a)return a end, \
+                        [\"__\"..\"add\"]=function(a_)return a_ end, \
+                        [\"__\"..\"sub\"]=function(a_)return a_ end, \
+                        [\"__\"..\"mul\"]=function(a_)return a_ end, \
                         [\"__\"..\"call\"]=function(...)return ... end \
                      }}); \
                      local p={}({}); if not p then {} else \
@@ -169,18 +169,18 @@ pub fn generate_split(use_debug: bool, key_var: &str) -> AntiTamperResult {
                     let hash_info = poly_hash("info");
                     // Luau Roblox 自适应：如果没有 sethook，探测 info（Luau特征），符合则放行
                     check_code = format!(
-                        "local d={}({}); local p={}({}); \
-                         if not (d and p) then {} else \
-                         local sh = d[{}({})]; local gh = d[{}({})]; \
+                        "local d_={}({}); local p={}({}); \
+                         if not (d_ and p) then {} else \
+                         local sh = d_[{}({})]; local gh = d_[{}({})]; \
                          if not (sh and gh) then \
-                             if d[{}({})] then {} else {} end \
+                             if d_[{}({})] then {} else {} end \
                          else \
                              local ok, h = p(gh); \
                              if not ok then {} else \
-                             local c = 0; local ok2 = p(sh, function() c=c+1 end, string_char(99)); \
+                             local c_ = 0; local ok2 = p(sh, function() c_=c_+1 end, string_char(99)); \
                              if not ok2 then {} else \
                              local function tmp() end; tmp(); p(sh); \
-                             if c < 1 then {} else {} end end end end end\n",
+                             if c_ < 1 then {} else {} end end end end end\n",
                         v_res, hash_debug, v_res, hash_pcall,
                         next_bad,
                         v_dec, hash_sethook, v_dec, hash_gethook,
@@ -201,11 +201,11 @@ pub fn generate_split(use_debug: bool, key_var: &str) -> AntiTamperResult {
                     let hash_info = poly_hash("info");
                     let hash_C = poly_hash("C");
                     check_code = format!(
-                        "local d={}({}); local p={}({}); \
-                         if not (d and p) then {} else \
-                         local gi = d[{}({})]; \
+                        "local d_={}({}); local p={}({}); \
+                         if not (d_ and p) then {} else \
+                         local gi = d_[{}({})]; \
                          if not gi then \
-                             if d[{}({})] then {} else {} end \
+                             if d_[{}({})] then {} else {} end \
                          else \
                              local ok, inf = p(gi, p); \
                              if not ok or type(inf)~='table' then {} else \
@@ -242,15 +242,15 @@ pub fn generate_split(use_debug: bool, key_var: &str) -> AntiTamperResult {
                 let hash_debug = poly_hash("debug");
                 let hash_info = poly_hash("info");
                 check_code = format!(
-                    "local s={}({}); local p={}({}); local d={}({}); \
+                    "local s={}({}); local p={}({}); local d_={}({}); \
                      if not (s and p) then {} else \
                      local du=s[{}({})]; \
                      if not du then \
-                         if d and d[{}({})] then {} else {} end \
+                         if d_ and d_[{}({})] then {} else {} end \
                      else \
                          local st = p(du, function() end); \
                          if not st then \
-                             if d and d[{}({})] then {} else {} end \
+                             if d_ and d_[{}({})] then {} else {} end \
                          else \
                              {} \
                          end \

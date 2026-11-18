@@ -521,19 +521,21 @@ impl Stmt {
 
 impl LocalVar {
     pub fn to_tokens(&self, ctx: &CodegenContext, tokens: &mut Vec<Token>) {
-        let mut mapped_name = if self.id != VarId(0) {
+        let mapped_name = if self.id != VarId(0) {
             ctx.mapping.get(&self.id).cloned().unwrap_or_else(|| ctx.map_string(&self.name))
         } else {
             ctx.map_string(&self.name)
         };
 
-        if mapped_name == "_" {
-            mapped_name = if self.id != VarId(0) {
+        let mapped_name = if mapped_name == "\x01" {
+            if self.id != VarId(0) {
                 ctx.map_string(&format!("_UNUSED_VAR_{}", self.id.0))
             } else {
                 ctx.map_string("_UNUSED_GLOBAL_")
-            };
-        }
+            }
+        } else {
+            mapped_name
+        };
 
         tokens.push(Token { text: mapped_name, token_type: TokenType::Identifier });
     }
@@ -646,19 +648,21 @@ impl Var {
     pub fn to_tokens(&self, ctx: &CodegenContext, tokens: &mut Vec<Token>) {
         match self {
             Var::Name(name, id) => {
-                let mut mapped_name = if *id != VarId(0) {
+                let mapped_name = if *id != VarId(0) {
                     ctx.mapping.get(id).cloned().unwrap_or_else(|| ctx.map_string(name))
                 } else {
                     ctx.map_string(name)
                 };
 
-                if mapped_name == "_" {
-                    mapped_name = if *id != VarId(0) {
+                let mapped_name = if mapped_name == "\x01" {
+                    if *id != VarId(0) {
                         ctx.map_string(&format!("_UNUSED_VAR_{}", id.0))
                     } else {
                         ctx.map_string("_UNUSED_GLOBAL_")
-                    };
-                }
+                    }
+                } else {
+                    mapped_name
+                };
 
                 tokens.push(Token { text: mapped_name, token_type: TokenType::Identifier });
             }

@@ -14,7 +14,7 @@ pub fn build_vm_core() -> String {
     core.push_str("while T <= #P do\n");
     core.push_str("V, W = string_byte(P, T, T), K[U];\n");
     core.push_str("Y = (T * 13) % 256; Z = (W + Y) % 256;\n");
-    core.push_str("X = (function(a, b) return E({a, b}, 1, 2) end)(V, Z);\n");
+    core.push_str("X = (function(a_, b_) return E({a_, b_}, 1, 2) end)(V, Z);\n");
     core.push_str("if math_random() < r then S[T] = string_char(X) else S[T] = string_char(X) end;\n");
     core.push_str("K[U] = (K[U] + V + Y + 7) % 256;\n");
     core.push_str("K[U] = (K[U] * 5 + 1) % 256;\n");

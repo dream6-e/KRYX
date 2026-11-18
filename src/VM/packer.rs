@@ -245,6 +245,12 @@ impl Packer {
     }
 
     fn build_decoder(keys: &[u8], rng: &mut GenRng) -> (String, String) {
+        // entry 常量：严格降序、两两间距 ≥100（a>b>c>d），供 cf_wrap 判断条件推算真假
+        let vd = rng.range(1, 1500) as i64;
+        let vc = vd + rng.range(100, 1500) as i64;
+        let vb = vc + rng.range(100, 1500) as i64;
+        let va = vb + rng.range(100, 1500) as i64;
+        cf_wrap::set_constants(va, vb, vc, vd);
         let f_entry = rng.name();
         let v_data = rng.name();
 
@@ -531,52 +537,52 @@ impl Packer {
         let mut sb = String::with_capacity(32768);
         sb.push_str(&format!("\nlocal function {f_entry}({v_data})\n    local _;\n    return ({{\n"));
         // ---------- m_bxor ----------
-        sb.push_str(&format!("        {m_bxor} = function(q, s, a, b, ra, rb, p, c, rra, rrb, k_bxor)\n"));
-        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("k_bxor = a * 256 + b;", rng)));
+        sb.push_str(&format!("        {m_bxor} = function(q, s, a_, b_, ra, rb, p, c_, rra, rrb, k_bxor)\n"));
+        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("k_bxor = a_ * 256 + b_;", rng)));
         sb.push_str("            _ = s.memo[k_bxor];\n            if _ then return _ end;\n");
-        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("ra, rb, p, c = a, b, 1, 0;", rng)));
+        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("ra, rb, p, c_ = a_, b_, 1, 0;", rng)));
         sb.push_str(&format!("            while {} do\n", cf_wrap::const_true(rng)));
         sb.push_str("                if ra > 0 or rb > 0 then\n");
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("rra, rrb = ra % 2, rb % 2;", rng)));
         sb.push_str("                    if rra ~= rrb then\n");
-        sb.push_str(&format!("                        {}\n", cf_wrap::wrap_stmt("c = c + p;", rng)));
+        sb.push_str(&format!("                        {}\n", cf_wrap::wrap_stmt("c_ = c_ + p;", rng)));
         sb.push_str("                    end\n");
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("ra, rb, p = s.floor((ra - rra) / 2), s.floor((rb - rrb) / 2), p * 2;", rng)));
         sb.push_str("                else break end;\n            end;\n");
-        sb.push_str("            local function hg(dr, ...) repeat return c or nil until dr end;local df=hg(true)\n");
+        sb.push_str("            local function hg(dr, ...) repeat return c_ or nil until dr end;local df=hg(true)\n");
         sb.push_str("            return df;\n        end,\n");
         // ---------- m_next ----------
-        sb.push_str(&format!("        {m_next} = function(q, s, r, c, e, v, x, y, z, i, d, b, k, B, F)\n"));
+        sb.push_str(&format!("        {m_next} = function(q, s, r, c_, e, v, x, y, z, i, d_, b_, k, B, F)\n"));
         sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt("B, F = s.byte, s.floor;", rng)));
-        sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt("i, d, b, k = s.idx, s.data, s.buf, s.kidx;", rng)));
-        sb.push_str("    if #b > 0 then\n");
-        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("r = s.remove(b, 1);", rng)));
-        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt(&format!("c = q:{m_bxor}(s, r, s.k[k + 1]);"), rng)));
+        sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt("i, d_, b_, k = s.idx, s.data, s.buf, s.kidx;", rng)));
+        sb.push_str("    if #b_ > 0 then\n");
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("r = s.remove(b_, 1);", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt(&format!("c_ = q:{m_bxor}(s, r, s.k[k + 1]);"), rng)));
         sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("s.kidx = (k + 1) % 16;", rng)));
-        sb.push_str("        return c;\n    end;\n");
+        sb.push_str("        return c_;\n    end;\n");
         sb.push_str("    if i > s.len then return nil end;\n");
         sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt("e = s.len - i + 1;", rng)));
         sb.push_str("    if e >= 5 then\n");
-        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d, i)-33) + (B(d, i+1)-33)*85 + (B(d, i+2)-33)*7225 + (B(d, i+3)-33)*614125 + (B(d, i+4)-33)*52200625;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d_, i)-33) + (B(d_, i+1)-33)*85 + (B(d_, i+2)-33)*7225 + (B(d_, i+3)-33)*614125 + (B(d_, i+4)-33)*52200625;", rng)));
         sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("z, y, x = v % 256, F(v / 256) % 256, F(v / 65536) % 256;", rng)));
         sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = F(v / 16777216);", rng)));
-        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b[1], b[2], b[3], b[4] = v, x, y, z;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b_[1], b_[2], b_[3], b_[4] = v, x, y, z;", rng)));
         sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 5;", rng)));
         sb.push_str("    elseif e >= 4 then\n");
-        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d, i)-33) + (B(d, i+1)-33)*85 + (B(d, i+2)-33)*7225 + (B(d, i+3)-33)*614125;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d_, i)-33) + (B(d_, i+1)-33)*85 + (B(d_, i+2)-33)*7225 + (B(d_, i+3)-33)*614125;", rng)));
         sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("y, x = v % 256, F(v / 256) % 256;", rng)));
         sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = F(v / 65536);", rng)));
-        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b[1], b[2], b[3] = v, x, y;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b_[1], b_[2], b_[3] = v, x, y;", rng)));
         sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 4;", rng)));
         sb.push_str("    elseif e >= 3 then\n");
-        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d, i)-33) + (B(d, i+1)-33)*85 + (B(d, i+2)-33)*7225;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d_, i)-33) + (B(d_, i+1)-33)*85 + (B(d_, i+2)-33)*7225;", rng)));
         sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("x = v % 256;", rng)));
         sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = F(v / 256);", rng)));
-        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b[1], b[2] = v, x;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b_[1], b_[2] = v, x;", rng)));
         sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 3;", rng)));
         sb.push_str("    elseif e >= 2 then\n");
-        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d, i)-33) + (B(d, i+1)-33)*85;", rng)));
-        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b[1] = v;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d_, i)-33) + (B(d_, i+1)-33)*85;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b_[1] = v;", rng)));
         sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 2;", rng)));
         sb.push_str("    else\n");
         sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 1;", rng)));
@@ -680,6 +686,12 @@ impl Packer {
             ("reverse", f_reverse.as_str()),
         ];
         let script = Self::rename_lua_idents(&script, &post_pairs);
+        // 2) 常量局部变量注入（消毒之后插入，字面量保留）
+        let script = script.replacen(
+            "\n    local _;\n",
+            &format!("\n    local _;\n    local a, b, c, d = {}, {}, {}, {};\n", va, vb, vc, vd),
+            1,
+        );
         (script, f_entry)
     }
 
