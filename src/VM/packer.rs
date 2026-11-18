@@ -362,13 +362,10 @@ impl Packer {
         for (i, inst) in insts_init.iter().enumerate() {
             let curr_st = insts_states[i];
             let next_st = insts_states[i+1];
-            if i == 0 {
-                init_insts_loop.push_str(&format!("if st=={} then {}st={};", curr_st, inst, next_st));
-            } else {
-                init_insts_loop.push_str(&format!("elseif st=={} then {}st={};", curr_st, inst, next_st));
-            }
+            // 每个状态分支用独立的 if...end，避免 elseif 链中间插入 st=Y; 语句导致语法错误
+            init_insts_loop.push_str(&format!("if st=={} then {}st={}; end;", curr_st, inst, next_st));
         }
-        init_insts_loop.push_str("else break end end;");
+        init_insts_loop.push_str("break; end;");
 
         // 每个 handler 的所有功能语句都被包进随机控制流（cf_wrap）
         let mut handlers_init = Vec::new();
@@ -480,13 +477,10 @@ impl Packer {
         for (i, h) in handlers_init.iter().enumerate() {
             let curr_st = handlers_states[i];
             let next_st = handlers_states[i+1];
-            if i == 0 {
-                init_handlers_loop.push_str(&format!("if st=={} then {}st={};", curr_st, h, next_st));
-            } else {
-                init_handlers_loop.push_str(&format!("elseif st=={} then {}st={};", curr_st, h, next_st));
-            }
+            // 每个状态分支用独立的 if...end，避免 elseif 链中间插入 st=Y; 语句导致语法错误
+            init_handlers_loop.push_str(&format!("if st=={} then {}st={}; end;", curr_st, h, next_st));
         }
-        init_handlers_loop.push_str("else break end end;");
+        init_handlers_loop.push_str("break; end;");
 
         let router_code = ControlFlowBuilder::build_fast_router(
             "s.pc", "s.insts", "inst", "s.handlers", "s.r_flg", "s.r_vals", "s.r_len", "s.tamper", "s.tail_flg", &format!("s.{}", f_unpack), rng

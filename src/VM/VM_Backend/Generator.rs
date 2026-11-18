@@ -257,7 +257,7 @@ impl ControlFlowBuilder {
             var_r_flg, var_tail_flg, var_tail_flg, var_r_flg, var_t, Self::obfuscate_num_depth(fetch_state, 1, &keys, rng), var_unpack, var_r_vals, Self::format_num(1, rng), var_r_len, var_t, Self::obfuscate_num_depth(fetch_state, 1, &keys, rng)
         ));
 
-        out.push_str("end end ");
+        out.push_str("end ");
         out
     }
 
