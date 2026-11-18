@@ -110,12 +110,31 @@ fn main() {
             let private_payload = Serializer::serialize(&decoded_chunk, &vm_ctx);
             
             let vm_generator = Generator::new(vm_ctx);
-            let obfuscated_vm = vm_generator.build(&private_payload);
+            // sample2 形态整形：紧接着生成器做，此时标识符还是生成器登记的原始长名，
+            // 才认得哪些是「自己造的名字」可以搬成槽位/方法。
+            // 1) shell 的共享状态 → 环境数字键槽位 `u[0x..]`
+            // 2) depth-0 的局部函数 → 大表方法 `v:名字(...)`
+            let mut reshape_rng = kryvex_ob::VM::VM_Backend::Generator::GenRng::new(0);
+            let raw_vm = vm_generator.build(&private_payload);
+            if std::env::var("KRYX_DEBUG_SHAPE_RAW").is_ok() {
+                let _ = std::fs::write("process/raw.lua", &raw_vm);
+            }
+            let (obfuscated_vm, shape_stats) =
+                kryvex_ob::VM::Reshape::apply(&raw_vm, &mut reshape_rng);
+            if std::env::var("KRYX_DEBUG_SHAPED").is_ok() {
+                let _ = std::fs::write("process/shaped.lua", &obfuscated_vm);
+            }
 
             let obfuscated_vm_clone = obfuscated_vm.clone();
             let h2 = thread::spawn(move || {
                 let _ = std::fs::write("process/process1.lua", obfuscated_vm_clone);
             });
+            // 把所有「生成器造出来的」标识符统一压成 1~2 字符（sample2 全文件都是
+            // 1~2 字符名）。固定名（execute/chunk/env/op/inst_A/getgenv/... 这些
+            // 模板里写死的未登记标识符）不参与，映射单射 ⇒ 语义不变。
+            let obfuscated_vm = kryvex_ob::VM::Names::shrink_once(&obfuscated_vm);
+            let _ = shape_stats;
+
             let compressed_vm = match Compressor::compress(&obfuscated_vm) {
                 Ok(code) => code,
                 Err(e) => {
@@ -152,6 +171,10 @@ fn main() {
                 processed_vm
             };
 
+            // sample2 形态收尾：入口名压成单字母（`:J()` 形态）。
+            // 标识符的 1~2 字符化在生成器阶段就已经完成（Names::shrink 紧跟整形），
+            // 这里只处理 `}):X()(...)` 的入口名。
+            let final_code = kryvex_ob::VM::Names::promote_entry(&final_code);
             let final_code = parenwrap::wrap_misc(&final_code);
 
             let mut file = match std::fs::File::create("obfuscated.lua") {

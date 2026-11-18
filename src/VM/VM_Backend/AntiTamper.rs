@@ -12,7 +12,9 @@ fn rand_var() -> String {
     let mut rng = thread_rng();
     let len = rng.gen_range(7..=12);
     let chars: Vec<char> = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".chars().collect();
-    (0..len).map(|_| chars[rng.gen_range(0..chars.len())]).collect()
+    let name: String = (0..len).map(|_| chars[rng.gen_range(0..chars.len())]).collect();
+    crate::VM::Names::register(&name);
+    name
 }
 
 fn random_string() -> String {

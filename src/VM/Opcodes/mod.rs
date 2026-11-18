@@ -29,7 +29,7 @@ impl OpcodesRng {
         loop {
             let len = self.next_range(5, 11);
             let s: String = (0..len).map(|_| chars[r.random_range(0..chars.len())]).collect();
-            if !keywords.contains(&s.as_str()) { return s; }
+            if !keywords.contains(&s.as_str()) { crate::VM::Names::register(&s); return s; }
         }
     }
 }

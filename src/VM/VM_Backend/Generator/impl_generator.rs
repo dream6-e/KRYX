@@ -7,6 +7,7 @@ impl Generator {
     pub fn new(ctx: VmContext) -> Self { Self { ctx } }
 
     pub fn build(&self, payload: &[u8]) -> String {
+        crate::VM::Names::reset();
         let mut rng = GenRng::new(self.ctx.seed);
         let var_l = rng.name();
         
@@ -240,6 +241,10 @@ impl Generator {
         let var_b_arr = rng.name();
         let var_c_arr = rng.name();
         let mut block_execute_def = String::new();
+        // sample2 形态：执行器也是大表里的一个方法（`?:function(v,...)`），
+        // 这样收尾的标识符压缩能把它和其余方法一起压成 1~2 字符。
+        // `local function` 才能在自身函数体里递归引用自己（handlers 会递归调用执行器）；
+        // 写成 `local x = function` 会让 x 在体内是全局 nil。
         block_execute_def.push_str(&format!("local function {}(chunk, env, upvals, ...) ", fn_execute));
         block_execute_def.push_str(&format!("local {} = function(...) return {}[{}]('#', ...) end; ", var_get_count, var_s, hex_select_idx));
         block_execute_def.push_str(&format!("local {} = {}(...); ", var_L, var_get_count));
@@ -624,13 +629,19 @@ impl Generator {
             }
         }
 
-        let fu = rng.name();
+        // sample2 的 J：`return({...}):J()(...)`。J 是最后一个表方法，
+        // 返回「执行器调用闭包」，随后被 `(...)` 立即调用。
+        let fn_shell_entry = rng.name();
         
         out.push_str(" ");
-        out.push_str(&format!("return {}(main_chunk, {}, {{}}, {}) end,{}=function(x) x:{}() end", fn_execute, var_boot_env, var_l, fu, wai));
+        // sample2 的收尾：`}):J()(...)` —— J 是表方法，返回一个可调用真身，
+        // 真身再被 `(...)` 立即调用（真身内部就是执行器跑主 chunk）。
+        out.push_str(&format!(
+            "return {}(main_chunk, {}, {{}}, {}) end,{}=function(v)return function(...)return v:{}()end end",
+            fn_execute, var_boot_env, var_l, fn_shell_entry, wai));
         out.push_str(&format!(",{}=select,{}=math.floor,{}=math.random,{}=string.char,{}=string.byte,{}=string.sub,{}=table.concat,{}=unpack or table and table.unpack or function() end,{}=pcall,{}=setmetatable,{}=type,{}=pairs,{}=bit32 and bit32.bxor or bit and bit.bxor or function(a_,b_)a_,b_=a_%4294967296,b_%4294967296;local r,p=0,1;while a_>0 or b_>0 do local ra,rb=a_%2,b_%2;if ra~=rb then r=r+p end;a_,b_,p=(a_-a_%1)/2,(b_-b_%1)/2,p*2 end;return r end,{}=bit32 and bit32.band or bit and bit.band or function(a_,b_)a_,b_=a_%4294967296,b_%4294967296;local r,p=0,1;while a_>0 and b_>0 do local ra,rb=a_%2,b_%2;if ra==1 and rb==1 then r=r+p end;a_,b_,p=(a_-a_%1)/2,(b_-b_%1)/2,p*2 end;return r end,{}=bit32 and bit32.bor or bit and bit.bor or function(a_,b_)a_,b_=a_%4294967296,b_%4294967296;local r,p=0,1;while a_>0 or b_>0 do local ra,rb=a_%2,b_%2;if ra==1 or rb==1 then r=r+p end;a_,b_,p=(a_-a_%1)/2,(b_-b_%1)/2,p*2 end;return r end,{}=bit32 and bit32.lshift or bit and (bit.lshift or bit.lsh) or function(a_,n)a_=a_%4294967296;return (a_*(2^n))%4294967296 end,{}=bit32 and bit32.rshift or bit and bit.rshift or function(a_,n)a_=a_%4294967296;return (a_ - a_ % (2^n)) / (2^n) end,{}=bit32 and bit32.bnot or bit and bit.bnot or function(a_)a_=a_%4294967296;return 4294967295 - a_ end",
             k_sel, k_floor, k_random, k_char, k_byte, k_sub, k_concat, k_unpack, k_pcall, k_setmt, k_type, k_pairs, k_bx, k_band, k_bor, k_lshift, k_rshift, k_bnot));
-        out.push_str(&format!(" }}):{}()", fu));
+        out.push_str(&format!(" }}):{}()(...)", fn_shell_entry));
         out
     }
 }

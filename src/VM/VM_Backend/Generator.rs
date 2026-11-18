@@ -688,7 +688,14 @@ impl GenRng {
         loop {
             let len = self.range(7, 14);
             let s: String = (0..len).map(|_| chars[self.range(0, chars.len())]).collect();
-            if !self.used.contains(&s) && !keywords.contains(&s.as_str()) { self.used.insert(s.clone()); return s; }
+            if !self.used.contains(&s) && !keywords.contains(&s.as_str()) {
+                self.used.insert(s.clone());
+                crate::VM::Names::register(&s);
+                if std::env::var("KRYX_DEBUG_NAMES").is_ok() {
+                    eprintln!("[names] gen {:?}", s);
+                }
+                return s;
+            }
         }
     }
     pub fn shuffle<T>(&mut self, slice: &mut [T]) {
