@@ -18,6 +18,7 @@ pub struct Block {
 pub enum LastStmt {
     Return(Vec<Expr>),
     Break,
+    Continue,
 }
 
 #[derive(Debug, Clone)]

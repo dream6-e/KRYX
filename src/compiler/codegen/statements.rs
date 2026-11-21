@@ -227,6 +227,8 @@ pub(super) fn compile_while(
     let condexit = compiler.compile_condition(&mut cond_e, cond_line)?;
     compiler.enter_block(true); 
     compile_block(compiler, body)?;
+    // `continue` 在 while 里跳到条件重算处（whileinit）
+    compiler.patch_continue_list(whileinit);
     let jmp = compiler.emit_jump(compiler.current_line);
     compiler.patch_list(jmp as i32, whileinit);
     compiler.leave_block();
@@ -244,6 +246,8 @@ pub(super) fn compile_repeat(
     compiler.enter_block(true); 
     compiler.enter_block(false); 
     compile_block(compiler, body)?;
+    // `continue` 在 repeat 里跳到 until 条件求值处
+    compiler.patch_continue_list(compiler.fs().pc());
     let mut cond_e = compile_expr(compiler, condition)?;
     let cond_line = condition.span().line;
     let condexit = compiler.compile_condition(&mut cond_e, cond_line)?;
@@ -341,6 +345,8 @@ pub(super) fn compile_numeric_for(
     compiler.activate_locals(1); 
     compiler.reserve_regs(1)?;
     compile_block(compiler, body)?;
+    // `continue` 在数值 for 里应当跳到 ForLoop 处（由 ForLoop 递增并回跳）
+    compiler.patch_continue_list(compiler.fs().pc());
     compiler.leave_block();
     compiler.patch_to_here(prep as i32);
     let endfor = compiler.emit_asbx(OpCode::ForLoop, base, NO_JUMP, line);
@@ -378,6 +384,7 @@ pub(super) fn compile_generic_for(
     #[allow(clippy::cast_possible_truncation)]
     compiler.reserve_regs(nvars as u32)?;
     compile_block(compiler, body)?;
+    compiler.patch_continue_list(compiler.fs().pc());
     compiler.leave_block();
     compiler.patch_to_here(prep as i32);
     #[allow(clippy::cast_possible_truncation)]

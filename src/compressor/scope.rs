@@ -118,7 +118,7 @@ impl LastStmt {
                     e.resolve(r);
                 }
             }
-            LastStmt::Break => {}
+            LastStmt::Break | LastStmt::Continue => {}
         }
     }
 }

@@ -287,3 +287,39 @@ q = {0x4CAD, 0x34CCC133, 0xBE8925D7, 0x821094B2, 0x7739FD95,
       方法互调 v: 135 次 / bit32. 直接引用 14 次 / 数字字段键 [N]= 252 次
       _P 解释器 21216 字节（约 40%），g== 25 个、区间比较 132 个、opcode 密集态非连续
 ```
+
+---
+
+## 11. 控制流复刻进度（2026-11-21 更新）
+
+按 §3 的真实骨架，把 `src/VM/cf_wrap.rs` 的语句包裹器改写成 sample2 的形态：
+
+| 手法 | 样本做法（§3） | 生成器现在的做法 |
+|---|---|---|
+| 哨兵状态死循环 | `repeat if h==0x50 then …;break;else if h~=… then h=0X50;end;end until false;` | `wrap_stmt` 有 40% 走 `state_machine()`：随机状态变量 + 3~5 个状态 + 真实 `==`/`not(…~=…)`/`not(not(…))` 判断 + `continue` 迁移 + `break` 出口，状态迁移值生成期精确推算 |
+| `while true do if X==N` 状态链 | `D2`、`VP`、`i2` | 同上的 `state_machine_while()` 变体，守卫 `true` / `not(<恒假>)` / `-(-94)` 混用 |
+| `repeat … until false` | 39 处 | 现在有真实产出（`until false` 25~31 处） |
+| `continue` | 96 处 | 93 处 |
+| `elseif` / `else if` 混用 | 55 处 elseif | 95 处 |
+| `if not(...)` | 152 处 | 112 处 |
+
+### 顺带修掉的三个真实缺陷（不修就没法生成这类控制流）
+
+1. **`continue` 跳转目标从未被回填**（`src/compiler/codegen.rs`）。
+   `add_continue_jump` 只把跳转链挂进 `block.continue_list`，四个循环编译器
+   （`while` / `repeat` / 数值 `for` / 泛型 `for`）从来没有调用过 `patch_list`，
+   于是 `continue` 的 JUMP 偏移停留在未回填状态 → 数值 `for` 里 `continue`
+   直接死循环。新增 `Compiler::patch_continue_list(target)` 并在四处补上：
+   `while` → 条件重算处、`repeat` → `until` 条件处、`for` → `ForLoop`/`TForLoop` 处。
+2. **压缩器的 AST 不认 `continue`**（`src/compressor/`）。
+   解析 `continue` 时报 `期望获得 '='`。给 `LastStmt` 加了 `Continue` 变体
+   （parser / scope / codegen 三处同步），现在 `continue` 能安全穿过压缩步骤。
+3. **状态机里 `return` 之后不能再补语句**。`wrap_stmt` 先检测 BODY 是否自带
+   `return`/`break`/`continue`，有就只做单趟包裹，避免 `return x;break;` 这种非法序列。
+
+### 试过但放弃的写法
+
+`if not(cond) then else BODY end` 这种「空 then、else 干活」的反写分支（样本
+`then else` 93 处）**在 BODY 含 `local` 时不成立**：BODY 被塞进 `if`/`repeat`
+的新作用域后，外层同名 `local` 被遮蔽，实测失败率从 3/30 跳到 20/30。
+已移除该分支，只保留语义安全的状态机包裹。

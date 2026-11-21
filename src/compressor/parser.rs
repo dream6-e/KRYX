@@ -650,6 +650,23 @@ impl Parser {
                     last_stmt = Some(LastStmt::Break);
                     break;
                 }
+                // Luau 扩展：`continue`。语法上同样是块的最后一条语句。
+                if text == "continue" {
+                    let line = self.current_line();
+                    self.advance();
+                    if self.loop_depth == 0 {
+                        self.add_error(self.semantic_error(
+                            "continue outside loop",
+                            line,
+                            Some("continue".to_string()),
+                        ));
+                    }
+                    if self.peek().map(|tok| tok.text.as_str()) == Some(";") {
+                        self.advance();
+                    }
+                    last_stmt = Some(LastStmt::Continue);
+                    break;
+                }
                 if text == ";" {
                     self.advance();
                     continue;

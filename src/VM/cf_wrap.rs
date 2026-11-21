@@ -313,6 +313,17 @@ fn elseif_chain(rng: &mut GenRng, v: i64, body: &str) -> String {
 /// `body` 必须是单条 Lua 语句（可含内部任意控制流），不含尾 `end` 匹配问题。
 pub fn wrap_stmt(body: &str, rng: &mut GenRng) -> String {
     let v = sval(rng) as i64;
+    // sample2 最核心的控制流形态：哨兵状态码 + `repeat ... until false` +
+    // `continue`/`break` 出口。约 35% 的语句走这条路径，其余走下面的
+    // if/repeat/for 单趟包裹。
+    // 状态机在 BODY 之后还要补 `break;`，所以 BODY 自身不能已经带走控制流
+    //（`return` / `break` / `continue` 都必须是块的最后一条语句，后面不能再接东西）。
+    let body_has_jump = body
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|w| w == "return" || w == "break" || w == "continue");
+    if !body_has_jump && rng.range(0, 100) < 40 {
+        return state_machine(body, rng);
+    }
     // 外层统一补分号：wrapper 以 end 收尾时，后续 `st=...` 等 token 不会被粘成一个标识符
     let out = match rng.range(0, 20) {
         // if + 随机恒真条件（scratch 复用 + 恒真判断）
@@ -525,4 +536,237 @@ pub fn wrap_block(stmts: &[String], rng: &mut GenRng) -> String {
         .map(|s| wrap_stmt(s, rng))
         .collect::<Vec<_>>()
         .join("")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// sample2 真实控制流骨架：哨兵状态码状态机 + `repeat ... until false` + continue/break
+//
+// 样本里的典型形态（`D2` / `VP` / `i2` / `W2` / `_P` 等共 37 个 `while true`、
+// 39 个 `repeat until false`、96 个 `continue`）：
+//
+//   D2=function(v,u)local m,f,K,p,h=99;while true do
+//     if m==102 then ... m=0B01101;
+//     elseif m==0B1101 then return -2,h;
+//     elseif m==0B1100011 then p=u[53]();m=(0X66);... end
+//   end ... end
+//
+//   repeat if h==0x50 then u=v:zP(u,f);break;
+//          else if h==0B00111_0101 then ... h=0X50; end;end
+//   until false;
+//
+//   repeat if u==122 then (v)[0B0101],v[48]=-(-0xFe),(-v[0X1e]);u=(17);continue;
+//          else if u~=0X11 then else return-0b1;end;end
+//   until false;
+//
+// 本函数按这个骨架生成：真实 dispatch 变量 + 真值状态迁移 + 实际执行的 BODY
+// 只放在其中一个状态分支里；其余状态分支是「迁移」或不可达出口。
+// 状态迁移值由生成期精确推算，保证 BODY 恰好执行一次、然后从循环里跳出。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 状态字面量：`0x`/`0X`/`0b`/`0B`/十进制混用，含前导零与 `_`（与 sample2 一致）
+fn state_lit(rng: &mut GenRng, v: u32) -> String {
+    if rng.range(0, 100) < 12 {
+        // 表达式通胀：`-(-0x..)` 这类
+        let inner = state_lit_plain(rng, v);
+        return format!("-(-{})", inner);
+    }
+    state_lit_plain(rng, v)
+}
+
+fn state_lit_plain(rng: &mut GenRng, v: u32) -> String {
+    match rng.range(0, 3) {
+        0 => {
+            let mut s = format!("{:X}", v);
+            if rng.range(0, 2) == 0 {
+                s = format!("{}{}", "0".repeat(rng.range(1, 3)), s);
+            }
+            let s = us_noise(&s, rng);
+            if rng.range(0, 2) == 0 { format!("0X{}", s) } else { format!("0x{}", s) }
+        }
+        1 => {
+            let s = us_noise(&format!("{:b}", v), rng);
+            if rng.range(0, 2) == 0 { format!("0B{}", s) } else { format!("0b{}", s) }
+        }
+        _ => format!("{}", v),
+    }
+}
+
+/// 在数字字面量里随机插 1~2 个 `_`（Luau 解析前会剥离）
+fn us_noise(s: &str, rng: &mut GenRng) -> String {
+    let bytes: Vec<char> = s.chars().collect();
+    let n = bytes.len();
+    if n < 3 {
+        return s.to_string();
+    }
+    let mut gaps: Vec<usize> = (1..n).collect();
+    let k = if rng.range(0, 100) < 45 { 0 } else { 1 + rng.range(0, 2) };
+    let mut out = String::with_capacity(n + k);
+    for (i, c) in bytes.iter().enumerate() {
+        out.push(*c);
+        if i + 1 < n && k > 0 && gaps.contains(&(i + 1)) && rng.range(0, 4) == 0 {
+            out.push('_');
+            gaps.retain(|g| *g != i + 1);
+        } else if i + 1 == n {
+            break;
+        }
+        let _ = &mut gaps;
+    }
+    let mut g = gaps.clone();
+    g.retain(|x| *x > 1);
+    let extra = k.saturating_sub(out.chars().filter(|c| *c == '_').count());
+    for _ in 0..extra {
+        if let Some(pos) = g.pop() {
+            let mut chars: Vec<char> = out.chars().collect();
+            if pos <= chars.len() {
+                chars.insert(pos, '_');
+                out = chars.into_iter().collect();
+            }
+        }
+    }
+    out
+}
+
+/// 生成「状态变量等于 v」为真的判断表达式。四种拼写混用，与 sample2 一致：
+/// `v==0X50`、`not(v~=0B1010000)`、`not(not(v==50))`、`v~=0X51 and v<0X52`
+fn eq_test(rng: &mut GenRng, var: &str, v: u32) -> String {
+    let lit = state_lit(rng, v);
+    match rng.range(0, 12) {
+        0..=5 => format!("{}=={}", var, lit),
+        6..=7 => format!("not({}~={})", var, lit),
+        8..=9 => format!("not(not({}=={}))", var, lit),
+        _ => {
+            let other = state_lit(rng, v ^ 1);
+            format!("{}~={} and {}=={}", var, other, var, lit)
+        }
+    }
+}
+
+/// `while true do ... end` 版本的状态机（sample2 的 `D2` / `VP` / `i2` 形态）。
+/// 出口只有 `break` / `return`，与外层语句继续衔接。
+pub fn state_machine_while(body: &str, rng: &mut GenRng) -> String {
+    const VARS: [&str; 6] = ["W", "m", "h", "u", "Z", "L"];
+    let var = VARS[rng.range(0, 6)].to_string();
+    let n = rng.range(3, 6);
+    let mut states: Vec<u32> = Vec::with_capacity(n);
+    while states.len() < n {
+        let v = rng.range(2, 200) as u32;
+        if !states.contains(&v) {
+            states.push(v);
+        }
+    }
+    let body_idx = if rng.range(0, 100) < 70 { n - 1 } else { n - 2 };
+    let use_elseif = rng.range(0, 2) == 0;
+
+    let mut out = String::with_capacity(body.len() + 320);
+    // sample2 里 37 处 `while true do` 就是字面 `true`；另有 `while-(-0B1011110)do`
+    // 这类不透明恒真写法。两种混用。
+    let guard = match rng.range(0, 10) {
+        0..=5 => "true".to_string(),
+        6..=7 => state_lit(rng, 1),
+        8 => format!("not({})", falsy(rng, None)),
+        9 => format!("{}", truthy(rng, None)),
+        _ => "-(-94)".to_string(),
+    };
+    out.push_str(&format!(
+        "{}={};while {} do ",
+        var,
+        state_lit(rng, states[0]),
+        guard
+    ));
+    for i in 0..n {
+        if i == 0 {
+            out.push_str(&format!("if {} then ", eq_test(rng, &var, states[i])));
+        } else if use_elseif {
+            out.push_str(&format!("elseif {} then ", eq_test(rng, &var, states[i])));
+        } else {
+            out.push_str(&format!("else if {} then ", eq_test(rng, &var, states[i])));
+        }
+        if i == body_idx {
+            out.push_str(body);
+            out.push_str(&format!("{}={};break;", var, state_lit(rng, states[0])));
+        } else if i + 1 < n {
+            out.push_str(&format!("{}={};", var, state_lit(rng, states[i + 1])));
+            if rng.range(0, 4) != 0 {
+                out.push_str("continue;");
+            }
+        } else {
+            out.push_str("break;");
+        }
+    }
+    let ends = if use_elseif { 1 } else { n };
+    for _ in 0..ends {
+        out.push_str(" end");
+    }
+    out.push_str(" end;");
+    out
+}
+
+/// 生成一个 `repeat ... until false;` 状态机外壳，把 `body` 放进其中一个状态分支。
+///
+/// 结构（n 个状态）：
+/// ```
+/// m=0X0A; repeat
+///   if m==0X0A then m=0X17;continue;
+///   else if m==0X17 then <BODY> break;
+///   else if m==0X21 then break; end;end;end
+/// until false;
+/// ```
+/// 状态迁移值在生成期精确推算 ⇒ BODY 恰好执行一次、随后 break 出环。
+pub fn state_machine(body: &str, rng: &mut GenRng) -> String {
+    // 两种骨架混用（sample2 里 `repeat until false` 39 处、`while true` 37 处）：
+    //   A) repeat ... until false;
+    //   B) while true do ... end
+    if rng.range(0, 100) < 45 {
+        return state_machine_while(body, rng);
+    }
+    const VARS: [&str; 6] = ["W", "m", "h", "u", "Z", "L"];
+    let var = VARS[rng.range(0, 6)].to_string();
+    let n = rng.range(3, 6);
+    let mut states: Vec<u32> = Vec::with_capacity(n);
+    while states.len() < n {
+        let v = rng.range(2, 200) as u32;
+        if !states.contains(&v) {
+            states.push(v);
+        }
+    }
+    // BODY 放在靠后的状态里（前面全是迁移态），偶尔提前一位
+    let body_idx = if rng.range(0, 100) < 70 { n - 1 } else { n - 2 };
+    // `elseif` 链（1 个 end）与 `else if` 嵌套（n 个 end）两种拼写混用，
+    // 与 sample2 一致（样本 elseif 55 次、`else if` 也大量出现）。
+    let use_elseif = rng.range(0, 2) == 0;
+
+    let mut out = String::with_capacity(body.len() + 320);
+    out.push_str(&format!("{}={};repeat ", var, state_lit(rng, states[0])));
+    for i in 0..n {
+        if i == 0 {
+            out.push_str(&format!("if {} then ", eq_test(rng, &var, states[i])));
+        } else if use_elseif {
+            out.push_str(&format!("elseif {} then ", eq_test(rng, &var, states[i])));
+        } else {
+            out.push_str(&format!("else if {} then ", eq_test(rng, &var, states[i])));
+        }
+        if i == body_idx {
+            out.push_str(body);
+            if rng.range(0, 100) < 55 {
+                out.push_str("break;");
+            } else {
+                // 出口：先把状态改成「下一态」再 break（sample2 常见）
+                out.push_str(&format!("{}={};break;", var, state_lit(rng, states[(i + 1) % n])));
+            }
+        } else if i + 1 < n {
+            out.push_str(&format!("{}={};", var, state_lit(rng, states[i + 1])));
+            if rng.range(0, 4) != 0 {
+                out.push_str("continue;");
+            }
+        } else {
+            out.push_str("break;");
+        }
+    }
+    // `elseif` 链只需 1 个 end；`else if` 嵌套需要 n 个 end
+    let ends = if use_elseif { 1 } else { n };
+    for _ in 0..ends {
+        out.push_str(" end");
+    }
+    out.push_str(" until false;");
+    out
 }

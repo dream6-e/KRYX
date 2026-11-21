@@ -582,6 +582,32 @@ impl Compiler {
             continue_list: NO_JUMP,
         });
     }
+    /// 把当前循环里所有 `continue` 跳转打到指定 pc（后续回填目标）。
+    /// 只处理最内层 breakable 块——`continue` 永远只作用于最内层循环。
+    pub(crate) fn patch_continue_list(&mut self, target: usize) {
+        let mut list = NO_JUMP;
+        {
+            let fs = self.fs();
+            for block in fs.blocks.iter().rev() {
+                if block.is_breakable {
+                    list = block.continue_list;
+                    break;
+                }
+            }
+        }
+        if list != NO_JUMP {
+            self.patch_list(list, target);
+        }
+        // 清空，避免被后续循环重复回填
+        let fs = self.fs_mut();
+        for block in fs.blocks.iter_mut().rev() {
+            if block.is_breakable {
+                block.continue_list = NO_JUMP;
+                break;
+            }
+        }
+    }
+
     pub(crate) fn leave_block(&mut self) {
         if let Some(block) = self.fs_mut().blocks.pop() {
             self.remove_locals(block.num_active_vars);

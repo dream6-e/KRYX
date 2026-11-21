@@ -343,6 +343,9 @@ impl LastStmt {
             LastStmt::Break => {
                 tokens.push(Token { text: "break".to_string(), token_type: TokenType::Keyword });
             }
+            LastStmt::Continue => {
+                tokens.push(Token { text: "continue".to_string(), token_type: TokenType::Keyword });
+            }
         }
     }
 }
