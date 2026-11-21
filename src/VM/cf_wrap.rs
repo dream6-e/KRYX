@@ -277,12 +277,12 @@ fn dead(rng: &mut GenRng, in_loop: bool, base: &str) -> String {
             return "break".into();
         }
         // 只用 base 及其计算形式，不再直接写普通数字
-        match rng.range(0, 4) {
+        return match rng.range(0, 4) {
             0 => format!("return {}", base),
             1 => format!("return {} + 1", base),
             2 => format!("return {} - 1", base),
             _ => format!("return {} * 2", base),
-        }
+        };
     }
     match rng.range(0, 6) {
         0 => format!("return {}", base),

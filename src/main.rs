@@ -154,6 +154,10 @@ fn main() {
 
             let final_code = parenwrap::wrap_misc(&final_code);
 
+            // Lua 5.1 不支持数字字面量中的下划线（如 0X_9_8、0x_a_3），
+            // 将其清理为合法的 0x 十六进制格式，避免 Compressor/lua5.1 解析失败。
+            let final_code = clean_num_literals(&final_code);
+
             let mut file = match std::fs::File::create("obfuscated.lua") {
                 Ok(f) => f,
                 Err(e) => {
@@ -177,4 +181,58 @@ fn main() {
             process::exit(1);
         }
     }
+}
+
+/// 清理 Lua 5.1 不支持的数字字面量格式：
+/// 1. 带下划线的十六进制（如 `0X_9_8`、`0x_a_3`、`0x100_`）→ 去除 `_`，统一为 `0x`
+/// 2. 二进制字面量（如 `0b1010`、`0B_01`）→ 转换为十进制数字
+/// Lua 5.1 词法分析器不接受数字字面量中的 `_`，也不支持 `0b` 二进制前缀。
+fn clean_num_literals(code: &str) -> String {
+    let chars: Vec<char> = code.chars().collect();
+    let mut out = String::with_capacity(chars.len());
+    let mut i = 0;
+    while i < chars.len() {
+        // 检测 0x / 0X / 0b / 0B 前缀
+        if i + 1 < chars.len() && chars[i] == '0'
+            && (chars[i + 1] == 'x' || chars[i + 1] == 'X' || chars[i + 1] == 'b' || chars[i + 1] == 'B')
+        {
+            let prefix = &chars[i..i + 2];
+            let mut j = i + 2;
+            // 读取数字和下划线
+            while j < chars.len() {
+                let c = chars[j];
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            if j > i + 2 {
+                let body: String = chars[i + 2..j].iter().filter(|&c| *c != '_').collect();
+                if !body.is_empty() {
+                    if prefix[0] == '0' && (prefix[1] == 'x' || prefix[1] == 'X') {
+                        // 十六进制：去除下划线，统一小写
+                        out.push_str("0x");
+                        out.push_str(&body.to_lowercase());
+                    } else {
+                        // 二进制：转换为十进制
+                        if let Ok(val) = u64::from_str_radix(&body, 2) {
+                            out.push_str(&val.to_string());
+                        } else {
+                            // 回退：保留原始
+                            out.push_str(&code[i..j]);
+                        }
+                    }
+                }
+                i = j;
+            } else {
+                out.push(chars[i]);
+                i += 1;
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }
