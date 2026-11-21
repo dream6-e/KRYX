@@ -6,6 +6,7 @@ pub mod Control_Flow;
 pub mod Opcodes;
 pub mod VM_Backend;
 pub mod packer;
+pub mod shell_pad;
 pub mod RadixSieve;
 pub(crate) mod numlit;
 

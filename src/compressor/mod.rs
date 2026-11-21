@@ -164,32 +164,57 @@ impl Compressor {
         //     因此仅当 t 也未被使用时才允许。
         for params in &resolver.param_lists {
             if params.len() < 2 { continue; }
-            if !rng.random_bool(0.6) { continue; }
+            // 第 4 类包装：重复参数名的目标密度对齐 sample2（约 45% 的函数含重名形参）
+            if !rng.random_bool(crate::VM::shell_pad::param_pad_ratio()) { continue; }
             let usage = |i: usize| resolver.var_usage.get(&params[i]).copied().unwrap_or(0);
             let mut unused: Vec<usize> = Vec::new();
             for i in 0..params.len() {
                 if usage(i) == 0 { unused.push(i); }
             }
             if unused.is_empty() { continue; }
-            let unused_i = unused[rng.random_range(0..unused.len())];
-            // 目标优先：靠后的参数（优先已使用的）；靠后不存在时只允许靠前且未使用的参数
-            let mut targets: Vec<usize> = Vec::new();
-            if unused_i + 1 < params.len() {
-                let used_later: Vec<usize> = (unused_i + 1..params.len()).filter(|&j| usage(j) > 0).collect();
-                targets = if !used_later.is_empty() {
-                    used_later
-                } else {
-                    (unused_i + 1..params.len()).collect()
-                };
-            } else {
-                targets = (0..unused_i).filter(|&j| usage(j) == 0).collect();
+            // 一个函数内可改写多个未使用形参 —— sample2 里 `function(v,v,u,m,f,K)` 这类
+            // 五六名字段、多次重名的签名很多，单次覆盖只能到 ~12%。
+            //
+            // 多轮改写必须满足：
+            //   1. 按索引**降序**处理（先改靠后的），这样靠后的参数不会因为「靠前被改名」
+            //      而把引用重绑定到别的槽位；
+            //   2. 被改过名的参数不能再作为后续轮次的目标；
+            //   3. 目标必须是「靠后且被使用」的参数（引用绑定回自己），
+            //      或「靠前且未使用、且未改名」的参数。
+            let mut used_once: HashMap<usize, ()> = HashMap::new();
+            let mut source: Vec<usize> = unused.clone();
+            source.sort_unstable_by(|a, b| b.cmp(a));
+            let hi = 5.min(source.len());
+            let rounds = rng.random_range(1..=hi);
+            for &unused_i in source.iter().take(rounds) {
+                let mut targets: Vec<usize> = Vec::new();
+                // 靠后且被使用：引用仍绑到自己（后面的同名形参才是最后绑定）
+                for j in unused_i + 1..params.len() {
+                    if usage(j) > 0 && !used_once.contains_key(&j) {
+                        targets.push(j);
+                    }
+                }
+                if targets.is_empty() {
+                    // 靠后没人用：只允许把靠前且「也未使用、也未改名」的参数名搬过来
+                    for j in 0..unused_i {
+                        if usage(j) == 0 && !used_once.contains_key(&j) {
+                            targets.push(j);
+                        }
+                    }
+                }
+                if targets.is_empty() { continue; }
+                let target = targets[rng.random_range(0..targets.len())];
+                let target_name = mapping.get(&params[target]).cloned().unwrap_or_default();
+                if target_name.is_empty()
+                    || target_name == "\x01"
+                    || matches!(target_name.as_str(), "_" | "a" | "b" | "c" | "d")
+                {
+                    continue;
+                }
+                if used_once.insert(target, ()).is_none() {
+                    mapping.insert(params[unused_i], target_name);
+                }
             }
-            if targets.is_empty() { continue; }
-            let target = targets[rng.random_range(0..targets.len())];
-            let target_name = mapping.get(&params[target]).cloned().unwrap_or_else(|| "\x01".to_string());
-            if target_name == "_" || target_name == "a" || target_name == "b" || target_name == "c" || target_name == "d" { continue; }
-            if target_name == "\x01" { continue; }
-            mapping.insert(params[unused_i], target_name);
         }
 
         let pool_counter = name_pool.counter;

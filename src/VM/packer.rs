@@ -312,6 +312,27 @@ impl Packer {
         let f_reverse = rng.name();
         let sb_chunk = rng.name();
 
+        // ===== 第 3/5 类包装：内建别名 + 样板填充函数（对齐 sample2 的壳外观）=====
+        // 字段名用 rng.name() 生成，收尾时随其它壳字段一起压成 1~2 字符短名。
+        let mut pad_fields: Vec<String> = Vec::new();
+        {
+            // 内建别名 6~11 个（sample2 有 20 个）
+            for _ in 0..rng.range(6, 12) {
+                let nm = rng.name();
+                pad_fields.push(crate::VM::shell_pad::builtin_alias(rng, &nm));
+            }
+            // 库整体别名 1~4 个（`i=table`、`r=buffer`、`u=unpack`、`Z=error`）
+            for _ in 0..rng.range(1, 5) {
+                let nm = rng.name();
+                pad_fields.push(crate::VM::shell_pad::lib_alias(rng, &nm));
+            }
+            // 样板填充函数 5~9 个（空函数 / 恒等 / 只读只写槽位 / 变参空转 / 槽位清空）
+            for _ in 0..rng.range(5, 10) {
+                let nm = rng.name();
+                pad_fields.push(crate::VM::shell_pad::pad_function(rng, &nm));
+            }
+        }
+
         let op_state0 = rng.range(100, 200);
         let op_state1 = rng.range(201, 300);
         let op_state2 = rng.range(301, 400);
@@ -535,7 +556,12 @@ impl Packer {
 
         // ===== 解码器函数体：所有功能语句都包进随机控制流（cf_wrap） =====
         let mut sb = String::with_capacity(32768);
-        sb.push_str(&format!("\nlocal function {f_entry}({v_data})\n    local _;\n    return ({{\n"));
+        // 外壳对象真名：`local {shell} = ({...})`，前导区里能直接引用。
+        // 绝不能用 `q` —— 解码器里大量函数形参就叫 `q`（`function(q, s, ...)`）。
+        let shell_obj = rng.name();
+        sb.push_str(&format!("\nlocal function {f_entry}({v_data})\n"));
+        sb.push_str("    local _;\n");
+        sb.push_str(&format!("    local {} = ({{\n", shell_obj));
         // ---------- m_bxor ----------
         sb.push_str(&format!("        {m_bxor} = function(q, s, a_, b_, ra, rb, p, c_, rra, rrb, k_bxor)\n"));
         sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("k_bxor = a_ * 256 + b_;", rng)));
@@ -650,7 +676,23 @@ impl Packer {
         sb.push_str(&format!("                unpack = q.{k_un}, char = q.{k_ch}, byte = q.{k_by}, floor = q.{k_fl}, insert = q.{k_ins}, concat = q.{k_cat}, remove = q.{k_rem}, reverse = q.{k_rev},\n"));
         sb.push_str("                bc = 0, res = {}, f = 0, p1 = 0, p2 = 0, w = 0, u = 0, ptr = 0\n");
         sb.push_str("            });\n        end\n");
-        sb.push_str(&format!("    , {k_un} = unpack or table.unpack, {k_ch} = string.char, {k_by} = string.byte, {k_fl} = math.floor, {k_ins} = table.insert, {k_cat} = table.concat, {k_rem} = table.remove, {k_rev} = string.reverse, {k_lf} = loadstring or load, {k_gm} = string.gmatch\n    }}):{m_main}({v_data});\nend\n"));
+        // 第 3/5 类：内建别名 + 样板填充函数，作为壳表的附加字段（sample2 的壳里
+        // 就挂着 `RP=bit32.band` / `u2=function(v)end` 这类字段）
+        if !pad_fields.is_empty() {
+            sb.push_str("    , ");
+            sb.push_str(&pad_fields.join("\n    , "));
+            sb.push('\n');
+        }
+        sb.push_str(&format!("    , {k_un} = unpack or table.unpack, {k_ch} = string.char, {k_by} = string.byte, {k_fl} = math.floor, {k_ins} = table.insert, {k_cat} = table.concat, {k_rem} = table.remove, {k_rev} = string.reverse, {k_lf} = loadstring or load, {k_gm} = string.gmatch\n    }});\n"));
+        // 第 6 类：IIFE（sample2 有 8 处 `(function(`，多为「只取出函数值存槽位」）。
+        // 放在壳表建好之后、`m_main` 调用之前；每条用 `do ... end;` 包住，
+        // 避免压缩器去分号后两个 IIFE 粘成链式调用 `f()(g)`。
+        // 另外这些句子会经过 cf_wrap 风格的重排，槽位号可能撞上解码器自己用的键，
+        // 所以只保留「不写任何字段」的纯读形态。
+        for _ in 0..rng.range(3, 7) {
+            sb.push_str(&format!("    {}\n", crate::VM::shell_pad::iife_stmt(rng, &shell_obj)));
+        }
+        sb.push_str(&format!("    return {}:{}({});\nend\n", shell_obj, m_main, v_data));
         let script = sb;
         let post_pairs: Vec<(&str, &str)> = vec![
             ("data", f_data.as_str()),

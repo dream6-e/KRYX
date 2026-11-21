@@ -392,3 +392,70 @@ _=c;_=d;_*=0b10;_=0X0_36;_+=b;_=49;_%=0X0_10;_+=(...);
 
 验证：用 Luau 实跑 205 个 seed 段的**逐句跟踪值**，全部与生成期推算一致；
 `examples/print.lua` 连续 60 次生成 59 次输出一致（1 次为基线同水平的偶发）。
+
+---
+
+## 8. 第 3/4/5/6 类包装形式的实现（对应 `sample2包装形式.md`）
+
+第 10 类（`if not(not m[15668])` 记忆化缓存槽）本轮**不做**，用户另行安排。
+
+### 8.1 第 3 类：内建/库别名挂在壳表字段上
+
+新增模块 `src/VM/shell_pad.rs`：`builtin_alias()` / `lib_alias()`。
+`src/VM/packer.rs` 的 `build_decoder` 里在其它壳字段之前生成 6~11 个内建别名
+（`bit32.band/bor/bxor/bnot/lshift/rshift/countlz/countrz/lrotate/rrotate`、
+`string.byte/sub/gsub/match/unpack`、`table.unpack`）与 1~4 个库整体别名
+（`table/buffer/unpack/error/coroutine/string`），字段名由 `GenRng::name()` 生成，
+收尾随全部壳字段一起压成 1~2 字符，因此产物与 sample2 的
+`RP=bit32.band,…,i=table,r=buffer,u=unpack,Z=error` 同形。
+
+真实产物片段：
+```
+…,bO=bit32.rshift,bP=bit32.band,bQ=string.gsub,…,bS=bit32.vi…,bV=bit32.bnot,bX=tabl…
+```
+
+### 8.2 第 4 类：重复参数名
+
+`src/compressor/mod.rs` 的参数覆盖逻辑改写为**每函数多轮**改写（2~5 轮，
+上限为「未使用形参」个数），密度参数 `shell_pad::param_pad_ratio() = 0.92`。
+
+多轮改写必须按索引**降序**处理，且：
+- 被改名的参数不能再作为后续轮次的目标（否则会连环重绑定）；
+- 目标要么是「更靠后且被使用」的参数（其引用仍绑到自己），
+  要么是「更靠前、未使用、且未改名」的参数（安全，因为只有一个绑定）。
+
+结果：形参 ≥2 的函数中约 35~40% 含重名形参（sample2 实测 63/139 ≈ 45%），
+改前只有 ~12%。
+
+### 8.3 第 5 类：样板填充函数
+
+`shell_pad::pad_function()`，5~9 个，全部取自 sample2 的真实形态：
+`function(v)end`、`function()end`、`function(v,v)return v;end`、
+`function(v,v,u)v=u[0x..];return v;end`、`function(v,v,u)u[0x..]=v;end`、
+`function(...)(...)[...]=nil;end`、槽位连清 `v[..]=nil;v[..]=nil;v[..]=nil`、
+自增伪装、双槽位搬运。它们只作为壳字段存在，不参与解码计算。
+
+### 8.4 第 6 类：IIFE
+
+`shell_pad::iife_stmt()`，3~7 条，插在**壳表构造完成之后、调用 `m_main` 之前**。
+踩过的三个坑（都已修复，勿重犯）：
+
+1. IIFE 是**语句**，不能放进表构造器内部 —— 一开始插在 `return ({ … })` 里导致
+   `Expected '}' … got '='`。改为 `local S=({…})` 之后再插入。
+2. 相邻两条 `(function()…end)()` 会被解析成链式调用 `f()(g)` —— 压缩器会去掉分号。
+   现在每条整条包在 `do … end;` 里，`do` 是语句起始，绝不会粘连。
+3. **绝不能引用壳对象名 `q`** —— 解码器里大量函数形参就叫 `q`（`function(q, s, …)`），
+   插入点若在其作用域内就会引用到形参。改为使用 `rng.name()` 生成的壳变量真名。
+   同样**绝不能写壳表的数字键**（那是解码器的状态/常量槽），只能是纯读或空转。
+
+### 8.5 验证
+
+- `examples/print.lua`：150 次随机生成，输出与源一致 141 次；
+  同一基线（未含本轮改动）150 次是 145 次 —— 差异来自既有的随机不稳定
+  （`attempt to compare nil <= nil` 一类，基线自身也会出现），
+  逐个特性开关 A/B 后失败率不变，确认非本轮引入。
+- `test/` + `test/Prometheus/` 矩阵：基线 19/22，本轮 19/22（连续两轮），
+  恒定的 3 个失败是既有的：`benchmark.lua`、`benchmark (1).lua`（输出含 CPU 计时文本）、
+  `hash.lua`（同样含计时）。
+- 产物由 128,188 B → 122,093 B；IIFE 3~7 条、内建别名 21~25 处、
+  形参 ≥2 的函数中重名率 35~40%。
