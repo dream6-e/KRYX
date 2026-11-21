@@ -189,12 +189,26 @@ impl<'a> Lexer<'a> {
             let start = i;
             if i + 2 < len && chars[start..start + 3] == ['.', '.', '.'] {
                 i += 3;
+            } else if i + 2 < len
+                && (chars[start..start + 3] == ['.', '.', '=']
+                    || chars[start..start + 3] == ['/', '/', '='])
+            {
+                // Luau 复合赋值：`..=`、`//=`
+                i += 3;
             } else if i + 1 < len
                 && (chars[start..start + 2] == ['.', '.']
                     || chars[start..start + 2] == ['=', '=']
                     || chars[start..start + 2] == ['~', '=']
                     || chars[start..start + 2] == ['<', '=']
-                    || chars[start..start + 2] == ['>', '='])
+                    || chars[start..start + 2] == ['>', '=']
+                    // Luau 复合赋值：`+=` `-=` `*=` `/=` `%=` `^=` `//`
+                    || chars[start..start + 2] == ['+', '=']
+                    || chars[start..start + 2] == ['-', '=']
+                    || chars[start..start + 2] == ['*', '=']
+                    || chars[start..start + 2] == ['/', '=']
+                    || chars[start..start + 2] == ['%', '=']
+                    || chars[start..start + 2] == ['^', '=']
+                    || chars[start..start + 2] == ['/', '/'])
             {
                 i += 2;
             } else {

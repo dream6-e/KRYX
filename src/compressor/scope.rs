@@ -134,6 +134,10 @@ impl Stmt {
                     e.resolve(r);
                 }
             }
+            Stmt::CompoundAssign(var, _op, rhs) => {
+                var.resolve(r);
+                rhs.resolve(r);
+            }
             Stmt::Call(call) => {
                 call.resolve(r);
             }

@@ -23,7 +23,10 @@ pub enum LastStmt {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
+    /// `vars <op> exprs`。`op` 为 `None` 时是普通 `=`；`Some("+=")` 等是 Luau 复合赋值。
     Assign(Vec<Var>, Vec<Expr>),
+    /// Luau 复合赋值（`a+=1` / `a..=s` / `a//=2`），只有单个目标、单个右值
+    CompoundAssign(Var, String, Expr),
     Call(Call),
     Do(Box<Block>),
     While(Box<Expr>, Box<Block>),

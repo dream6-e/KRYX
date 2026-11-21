@@ -160,105 +160,154 @@ fn pick_letter(rng: &mut GenRng) -> &'static str {
     LETTERS[rng.range(0, 4)]
 }
 
-/// `_` 初值：**全部由 a/b/c/d 与复用数字计算得出**，不再直接写一个大字面量。
+/// sample2 的招牌写法：`e+g-g+g+g`、`_+_-_-_-g`、`L+L-g-g`。
+/// 由「字母常量 + 复用小数字」交替加减组成，展开值在生成期精确推算。
+fn noise_chain(rng: &mut GenRng, v: i64) -> (String, i64) {
+    let vals = const_vals();
+    let n = 3 + rng.range(0, 4); // 3~6 项
+    let mut s = String::new();
+    let mut val = v;
+    for i in 0..n {
+        let plus = rng.range(0, 2) == 0;
+        // 交替使用字母常量与池中数字，sample2 里两者都高频出现
+        let token = if rng.range(0, 3) == 0 {
+            let l = LETTERS[rng.range(0, 4)];
+            val = if plus { val + letter_val(&vals, l) } else { val - letter_val(&vals, l) };
+            l.to_string()
+        } else {
+            let k = small(rng);
+            val = if plus { val + k } else { val - k };
+            fmt_num(rng, k)
+        };
+        if i == 0 && plus {
+            // 第一项若为正号，直接接在后面（`L+e`），不加 `+`
+            s.push_str(&token);
+        } else {
+            s.push(if plus { '+' } else { '-' });
+            s.push_str(&token);
+        }
+    }
+    (s, val)
+}
+
+fn compound_chain(rng: &mut GenRng) -> (Vec<String>, i64) {
+    let vals = const_vals();
+    let mut v = vals[3];
+    let mut out: Vec<String> = vec![format!("_={}", LETTERS[3])];
+    let steps = 1 + rng.range(0, 3);
+    for _ in 0..steps {
+        match rng.range(0, 6) {
+            0 => {
+                let k = small_mod(rng, 9);
+                out.push(format!("_*={}", fmt_num(rng, k)));
+                v = v.saturating_mul(k);
+            }
+            1 => {
+                let l = LETTERS[2];
+                out.push(format!("_+={}", l));
+                v = v.saturating_add(letter_val(&vals, l));
+            }
+            2 => {
+                let k = small(rng);
+                let l = LETTERS[1];
+                out.push(format!("_={}", fmt_num(rng, k)));
+                v = k;
+                out.push(format!("_+={}", l));
+                v = v.saturating_add(letter_val(&vals, l));
+            }
+            3 => {
+                let k = small(rng);
+                out.push(format!("_-={}", fmt_num(rng, k)));
+                v = v.saturating_sub(k);
+            }
+            4 => {
+                let m = small_mod(rng, 40);
+                let base = m + small(rng);
+                out.push(format!("_={}", fmt_num(rng, base)));
+                v = base;
+                out.push(format!("_%={}", fmt_num(rng, m)));
+                v = lua_mod(base, m);
+            }
+            _ => {
+                let m = small_mod(rng, 9) + 1;
+                let base = m * small_mod(rng, 5);
+                out.push(format!("_={}", fmt_num(rng, base)));
+                v = base;
+                out.push(format!("_//={}", fmt_num(rng, m)));
+                v = base / m;
+            }
+        }
+    }
+    (out, v)
+}
+
+/// `_` 初值：全部由 a/b/c/d 与复用数字**计算**得出，随后按 sample2 的写法
+/// 继续做「噪声加减链」或「复合运算符链」。
 /// 返回 (语句文本, `_` 的最终已知值)。
 fn seed(rng: &mut GenRng) -> (String, i64) {
     let vals = const_vals();
-    let (mut v, mut t) = match rng.range(0, 9) {
-        0 => {
-            let k = small(rng);
-            (vals[3] - k, format!("_={}-{}", LETTERS[3], fmt_num(rng, k)))
-        }
-        1 => {
-            let k = small(rng);
-            let k2 = small(rng);
-            let e = format!("_={}-{}+{}", LETTERS[2], fmt_num(rng, k), fmt_num(rng, k2));
-            (vals[2] - k + k2, e)
-        }
-        2 => {
-            let k = small_mod(rng, 61);
-            (lua_mod(vals[3], k), format!("_={}%{}", LETTERS[3], fmt_num(rng, k)))
-        }
+    // 每条语句单独进向量，最后用 `;` 连接 —— 不能直接拼，否则会出现非法的 `;;`
+    let mut stmts: Vec<String> = Vec::new();
+
+    // 以字母常量起始的初值（sample2 里状态量几乎都由常量推出）
+    let (mut v, first) = match rng.range(0, 6) {
+        0 => (vals[3], format!("_={}", LETTERS[3])),
+        1 => (vals[2], format!("_={}", LETTERS[2])),
+        2 => (vals[1], format!("_={}", LETTERS[1])),
         3 => {
-            let k = small_mod(rng, 61);
-            let k2 = small(rng);
-            let e = format!("_={}%{}+{}", LETTERS[2], fmt_num(rng, k), fmt_num(rng, k2));
-            (lua_mod(vals[2], k) + k2, e)
+            let m = small_mod(rng, 61);
+            (lua_mod(vals[2], m), format!("_={}%{}", LETTERS[2], fmt_num(rng, m)))
         }
         4 => {
-            let k = small_mod(rng, 40);
-            (vals[1] * k, format!("_={}*{}", LETTERS[1], fmt_num(rng, k)))
-        }
-        5 => {
-            let k = small_mod(rng, 40);
-            let k2 = small(rng);
-            let e = format!("_={}*{}+{}", LETTERS[1], fmt_num(rng, k), fmt_num(rng, k2));
-            (vals[1] * k + k2, e)
-        }
-        6 => {
-            let k = small_mod(rng, 20);
-            let e = format!("_={}-{}*{}", LETTERS[0], LETTERS[2], fmt_num(rng, k));
-            (vals[0] - vals[2] * k, e)
-        }
-        7 => {
-            let k = small_mod(rng, 61);
-            let k2 = small_mod(rng, 12);
-            let e = format!("_={}%{}*{}", LETTERS[0], fmt_num(rng, k), fmt_num(rng, k2));
-            (lua_mod(vals[0], k) * k2, e)
+            let m = small_mod(rng, 61);
+            (lua_mod(vals[0], m), format!("_={}%{}", LETTERS[0], fmt_num(rng, m)))
         }
         _ => {
             let k = small(rng);
             (k, format!("_={}", fmt_num(rng, k)))
         }
     };
-    // 「同一个变量不断计算」：在初值上再做 0~3 步算术，`_` 被反复读改写
-    let steps = rng.range(0, 4);
-    for _ in 0..steps {
-        match rng.range(0, 6) {
-            0 => {
-                let k = small(rng);
-                v = v.saturating_add(k);
-                t.push_str(&format!(";_=_+{}", fmt_num(rng, k)));
-            }
-            1 => {
-                let k = small(rng);
-                if v >= k {
-                    v -= k;
-                    t.push_str(&format!(";_=_-{}", fmt_num(rng, k)));
-                } else {
-                    v += k;
-                    t.push_str(&format!(";_=_+{}", fmt_num(rng, k)));
-                }
-            }
-            2 => {
-                let k = small_mod(rng, 9);
-                if v.abs() < 100_000_000 {
-                    v = v.saturating_mul(k);
-                    t.push_str(&format!(";_=_*{}", fmt_num(rng, k)));
-                } else {
-                    let k2 = small(rng);
-                    v = lua_mod(v, 1000) + k2;
-                    t.push_str(&format!(";_=_%{}+{}", fmt_num(rng, 1000), fmt_num(rng, k2)));
-                }
-            }
-            3 => {
-                let k = small(rng);
-                let m = k + small_mod(rng, 30);
-                v = lua_mod(v + k, m);
-                t.push_str(&format!(";_=(_+{})%{}", fmt_num(rng, k), fmt_num(rng, m)));
-            }
-            4 => {
-                let k = small_mod(rng, 9);
-                let m = k * 7 + small(rng);
-                v = lua_mod(v * k, m);
-                t.push_str(&format!(";_=(_*{})%{}", fmt_num(rng, k), fmt_num(rng, m)));
-            }
-            _ => {
-                let k = small_mod(rng, 20);
-                v -= lua_mod(v, k);
-                t.push_str(&format!(";_=_-_%{}", fmt_num(rng, k)));
-            }
+    stmts.push(first);
+
+    // sample2 的两种招牌写法混用：
+    //   A) `_=_+(e+g-g+g+g)` —— 字母/数字噪声链
+    //   B) `_+=e; _*=k; _%=m` —— 复合运算符链
+    if rng.range(0, 2) == 0 {
+        let (chain, dv) = noise_chain(rng, 0);
+        v = v.saturating_add(dv);
+        stmts.push(format!("_=_+({})", chain));
+    } else {
+        let (pieces, cv) = compound_chain(rng);
+        for p in pieces {
+            stmts.push(p);
         }
+        v = cv;
+    }
+
+    // 再加 0~2 步噪声加减，长度与 sample2 的 `_+_-_-_-g` 相当
+    for _ in 0..rng.range(0, 3) {
+        let (chain, dv) = noise_chain(rng, 0);
+        let minus = rng.range(0, 3) == 0;
+        stmts.push(format!("_{}({})", if minus { "-=" } else { "+=" }, chain));
+        v = if minus { v.saturating_sub(dv) } else { v.saturating_add(dv) };
+    }
+
+    // 让数值落进小范围，后续比较区间才可控
+    let m = small_mod(rng, 50) + 9;
+    v = lua_mod(v, m);
+    stmts.push(format!("_%={}", fmt_num(rng, m)));
+
+    // 铁律：`if not _ then <死> else <正文> end`、`if not(not _) then <正文> end`
+    // 这几个 wrapper 都要求 `_ ~= 0`，取模后可能刚好是 0，必须推离 0。
+    if v == 0 {
+        let k = small(rng);
+        v = k;
+        stmts.push(format!("_+={}", fmt_num(rng, k)));
+    }
+    // 全部语句都结束在 `_` 上，后面接判断不可能出现空语句或悬空分号
+    let t = stmts.join(";");
+    if std::env::var("KRYX_DEBUG_SEED").is_ok() {
+        eprintln!("SEED\t{},{},{},{}\t{}\t{}", vals[0], vals[1], vals[2], vals[3], v, t);
     }
     (t, v)
 }

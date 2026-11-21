@@ -368,6 +368,11 @@ impl Stmt {
                     e.to_tokens(ctx, tokens);
                 }
             }
+            Stmt::CompoundAssign(var, op, rhs) => {
+                var.to_tokens(ctx, tokens);
+                tokens.push(Token { text: op.clone(), token_type: TokenType::Symbol });
+                rhs.to_tokens(ctx, tokens);
+            }
             Stmt::Call(call) => {
                 call.to_tokens(ctx, tokens);
             }

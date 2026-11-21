@@ -580,6 +580,18 @@ impl Parser {
                                 return Err(self.syntax_error("Expected variable in assignment left-hand side", line));
                             }
                         }
+                        // Luau 复合赋值：`a+=1`、`a..=s`、`a//=2` 等
+                        let comp_ops = ["+=", "-=", "*=", "/=", "//=", "%=", "^=", "..="];
+                        if vars.len() == 1 {
+                            if let Some(tok) = self.peek() {
+                                let t = tok.text.clone();
+                                if comp_ops.contains(&t.as_str()) {
+                                    self.advance();
+                                    let rhs = self.parse_expr_bp(0)?;
+                                    return Ok(Stmt::CompoundAssign(vars.remove(0), t, rhs));
+                                }
+                            }
+                        }
                         self.consume("=")?;
                         let mut exprs = Vec::new();
                         loop {
