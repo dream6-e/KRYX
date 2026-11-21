@@ -568,6 +568,8 @@ impl Generator {
         }
 
         let mut out = String::new();
+        // Luau 兼容性：getgenv/getfenv 在 Luau 中不可用，提供 shim 返回 _ENV
+        out.push_str("getgenv=getgenv or function()return _ENV end;getfenv=getfenv or function()return _ENV end;");
         out.push_str(&format!("local {} = ...;\n", var_l));
         out.push_str(&header_block);
         out.push_str(&format!("local math_floor, string_char, string_sub, string_byte, table_concat = {}.{}, {}.{}, {}.{}, {}.{}, {}.{}; local math_random = {}.{}; local setmetatable = {}.{}; local type = {}.{}; local pairs = {}.{}; local pcall = {}.{}; local bxor_fn, band_fn, bor_fn, lshift_fn, rshift_fn, bnot_fn = {}.{}, {}.{}, {}.{}, {}.{}, {}.{}, {}.{}; ",

@@ -154,10 +154,9 @@ fn main() {
 
             let final_code = parenwrap::wrap_misc(&final_code);
 
-            // Luau 首要支持：0b 二进制与带下划线字面量 Luau 均原生支持，无需改动。
-            // 仅对 Lua 5.1 不支持的带下划线十六进制（如 0X_9_8、0x_a_3）做清理，
-            // 避免在 lua5.1 下出现 'malformed number' 语法错误。
-            let final_code = clean_hex_literals(&final_code);
+            // 清理 0x/0X/0b/0B 字面量中的下划线（Lua 5.1 不支持下划线，Luau 下划线不可在开头/结尾）。
+            // 二进制 0b/0B 保留原样（不转十进制），仅去除下划线。
+            let final_code = clean_num_literals(&final_code);
 
             let mut file = match std::fs::File::create("obfuscated.lua") {
                 Ok(f) => f,
@@ -184,21 +183,25 @@ fn main() {
     }
 }
 
-/// 清理 Lua 5.1 不支持的带下划线十六进制字面量（如 `0X_9_8`、`0x_a_3`、`0x100_`）。
-/// Luau 首要支持：0b 二进制与带下划线字面量 Luau 均原生支持，此处不做二进制转换。
-/// Lua 5.1 词法分析器不接受数字字面量中的 `_`；将其清理为合法的 `0x` 十六进制格式。
-fn clean_hex_literals(code: &str) -> String {
+/// 清理 Lua 5.1 和 Luau 中带下划线的数字字面量：
+/// - 十六进制 `0x`/`0X`：去除 `_`，统一为 `0x` 小写（Lua 5.1 不支持下划线）
+/// - 二进制 `0b`/`0B`：仅去除 `_`，保留 `0b` 前缀（Luau 原生支持二进制，但下划线不能在开头/结尾）
+/// Luau 首要支持：0b 二进制字面量原生支持，此处不做进制转换，只清理非法下划线。
+fn clean_num_literals(code: &str) -> String {
     let chars: Vec<char> = code.chars().collect();
     let mut out = String::with_capacity(chars.len());
     let mut i = 0;
     while i < chars.len() {
-        // 检测 0x / 0X 前缀（不再处理 0b / 0B，Luau 原生支持二进制字面量）
-        if i + 1 < chars.len() && chars[i] == '0' && (chars[i + 1] == 'x' || chars[i + 1] == 'X') {
+        // 检测 0x / 0X / 0b / 0B 前缀
+        if i + 1 < chars.len() && chars[i] == '0'
+            && (chars[i + 1] == 'x' || chars[i + 1] == 'X' || chars[i + 1] == 'b' || chars[i + 1] == 'B')
+        {
+            let is_hex = chars[i + 1] == 'x' || chars[i + 1] == 'X';
             let mut j = i + 2;
-            // 读取十六进制数字和下划线
+            // 读取数字和下划线
             while j < chars.len() {
                 let c = chars[j];
-                if c.is_ascii_hexdigit() || c == '_' {
+                if c.is_ascii_alphanumeric() || c == '_' {
                     j += 1;
                 } else {
                     break;
@@ -206,10 +209,15 @@ fn clean_hex_literals(code: &str) -> String {
             }
             if j > i + 2 {
                 // 提取并去除下划线
-                let hex_part: String = chars[i + 2..j].iter().filter(|&c| *c != '_').collect();
-                if !hex_part.is_empty() {
-                    out.push_str("0x");
-                    out.push_str(&hex_part.to_lowercase());
+                let body: String = chars[i + 2..j].iter().filter(|&c| *c != '_').collect();
+                if !body.is_empty() {
+                    let prefix = if is_hex { "0x" } else { "0b" };
+                    out.push_str(prefix);
+                    if is_hex {
+                        out.push_str(&body.to_lowercase());
+                    } else {
+                        out.push_str(&body);
+                    }
                 }
                 i = j;
             } else {
