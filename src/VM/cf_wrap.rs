@@ -59,6 +59,9 @@ fn pick_op(rng: &mut GenRng) -> &'static str {
 
 const LETTERS: [&str; 4] = ["a", "b", "c", "d"];
 
+/// `not` 嵌套层数上限（用户 2026-11-21 要求：不大于 2 层）
+const NOT_DEPTH_LIMIT: u32 = 2;
+
 fn letter_val(vals: &[i64; 4], l: &str) -> i64 {
     match l {
         "a" => vals[0],
@@ -187,21 +190,26 @@ fn gen_bool(rng: &mut GenRng, v: Option<i64>, force: bool) -> String {
         let want_underscore = v.is_some() && matches!(rng.range(0, 10), 0..=5);
         let n_leaves = 1 + if rng.range(0, 10) < 4 { 1 } else { 0 } + if rng.range(0, 10) < 2 { 1 } else { 0 };
 
-        let mut leaves: Vec<(String, bool)> = Vec::with_capacity(n_leaves);
+        // `not` 嵌套上限（用户要求：整条条件的 not 嵌套不超过 2 层）。
+        // 每个原子的 not 层数独立随机，但最终整体取反时如果会让深度超过
+        // 上限，就改用等价的 `<expr>==false` 写法，绝不产生第三层 not。
+        let mut leaves: Vec<(String, bool, u32)> = Vec::with_capacity(n_leaves);
+        let mut max_not = 0u32;
         for _ in 0..n_leaves {
             let leaf_v = if want_underscore { v } else {
                 // 这个原子不强制用 `_`，按原子级 60/40 规则
                 if v.is_some() && rng.range(0, 10) < 6 { v } else { None }
             };
             let (txt, tr) = atom(rng, leaf_v);
-            let nots = rng.range(0, 4); // 0..2 层 not
+            let nots = rng.range(0, NOT_DEPTH_LIMIT as usize + 1) as u32; // 0..=2
+            max_not = max_not.max(nots);
             let mut t = tr;
             let mut s = txt;
             for _ in 0..nots {
                 s = format!("not({})", s);
                 t = !t;
             }
-            leaves.push((s, t));
+            leaves.push((s, t, nots));
         }
 
         let mut expr = leaves[0].0.clone();
@@ -222,7 +230,13 @@ fn gen_bool(rng: &mut GenRng, v: Option<i64>, force: bool) -> String {
             expr = format!("({})", expr);
         }
         if truth != force {
-            expr = format!("not({})", expr);
+            // 整体取反。再加一层 not 会让深度变成 max_not+1：
+            // 只要不超过上限就用 not(...)，否则用等价的 (expr)==false。
+            if max_not < NOT_DEPTH_LIMIT {
+                expr = format!("not({})", expr);
+            } else {
+                expr = format!("({})==false", expr);
+            }
         }
         expr
     }
@@ -663,7 +677,9 @@ pub fn state_machine_while(body: &str, rng: &mut GenRng) -> String {
     let guard = match rng.range(0, 10) {
         0..=5 => "true".to_string(),
         6..=7 => state_lit(rng, 1),
-        8 => format!("not({})", falsy(rng, None)),
+        // 恒真守卫：用 const_true（内部已受 NOT_DEPTH_LIMIT 约束），
+        // 不要再手动套 not(...)，否则会和内部 not 叠加超限
+        8 => const_true(rng),
         9 => format!("{}", truthy(rng, None)),
         _ => "-(-94)".to_string(),
     };
