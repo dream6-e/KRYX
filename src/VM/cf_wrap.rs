@@ -269,44 +269,53 @@ fn gen_until(rng: &mut GenRng) -> String {
     gen_bool(rng, None, true)
 }
 
-/// 死分支：永不执行。return 随机数字/变量，或 loop 上下文里 break。
-fn dead(rng: &mut GenRng, in_loop: bool) -> String {
+/// 死分支：永不执行。return 基于 base 的计算值（不再出现普通数字字面量），
+/// 或 loop 上下文里 break。base 是控制流复用的数字基准变量名（如 "x"）。
+fn dead(rng: &mut GenRng, in_loop: bool, base: &str) -> String {
     if in_loop && rng.range(0, 10) < 3 {
         if rng.range(0, 2) == 0 {
             return "break".into();
         }
-        return format!("return {}", rng.range(2, 9999));
+        // 只用 base 及其计算形式，不再直接写普通数字
+        match rng.range(0, 4) {
+            0 => format!("return {}", base),
+            1 => format!("return {} + 1", base),
+            2 => format!("return {} - 1", base),
+            _ => format!("return {} * 2", base),
+        }
     }
-    match rng.range(0, 4) {
-        0 => format!("return {}", rng.range(2, 9999)),
-        1 => format!("do _ = {}; return _ end", rng.range(2, 9999)),
-        2 => "return _".into(),
-        _ => format!("return {} + {}", rng.range(2, 999), rng.range(2, 999)),
+    match rng.range(0, 6) {
+        0 => format!("return {}", base),
+        1 => format!("return {} + 1", base),
+        2 => format!("return {} - 1", base),
+        3 => format!("return {} * 2", base),
+        4 => format!("return {} / 2", base),
+        _ => format!("do local _ = {}; return _ end", base),
     }
 }
 
 /// elseif 与 else if 两种拼写混用：随机构造链
-fn elseif_chain(rng: &mut GenRng, v: i64, body: &str) -> String {
+fn elseif_chain(rng: &mut GenRng, v: i64, body: &str, base: &str) -> String {
     let use_elseif = rng.range(0, 2) == 0;
     if use_elseif {
         format!(
             "_={};if {} then {} elseif {} then {} else {} end",
             v,
             falsy(rng, Some(v)),
-            dead(rng, false),
+            dead(rng, false, base),
             truthy(rng, Some(v)),
             body,
-            dead(rng, false)
+            dead(rng, false, base)
         )
     } else {
         format!(
             "_={};if {} then {} else if {} then {} else {} end end",
             v,
             falsy(rng, Some(v)),
-            dead(rng, false),
+            dead(rng, false, base),
             truthy(rng, Some(v)),
             body,
-            dead(rng, false)
+            dead(rng, false, base)
         )
     }
 }
@@ -315,175 +324,202 @@ fn elseif_chain(rng: &mut GenRng, v: i64, body: &str) -> String {
 /// `body` 必须是单条 Lua 语句（可含内部任意控制流），不含尾 `end` 匹配问题。
 pub fn wrap_stmt(body: &str, rng: &mut GenRng) -> String {
     let v = sval(rng) as i64;
+    let x = v;
+    let x_decl = format!("local x = {};", x);
     // 外层统一补分号：wrapper 以 end 收尾时，后续 `st=...` 等 token 不会被粘成一个标识符
     let out = match rng.range(0, 20) {
         // if + 随机恒真条件（scratch 复用 + 恒真判断）
         0 => format!(
-            "_={};if {} then {} else {} end",
+            "_={};{};if {} then {} else {} end",
             v,
+            x_decl,
             truthy(rng, Some(v)),
             body,
-            dead(rng, false)
+            dead(rng, false, "x")
         ),
         // 纯常量守卫 if（不碰 _）
         1 => format!(
-            "if {} then {} else {} end",
+            "{}if {} then {} else {} end",
+            x_decl,
             const_true(rng),
             body,
-            dead(rng, false)
+            dead(rng, false, "x")
         ),
         // if not _ then ... else ...（scratch 恒真取反恒假）
         2 => format!(
-            "_={};if not _ then {} else {} end",
+            "_={};{};if not _ then {} else {} end",
             v,
-            dead(rng, false),
+            x_decl,
+            dead(rng, false, "x"),
             body
         ),
         // 双 not：if not(not _)
         3 => format!(
-            "_={};if not(not _) then {} else {} end",
+            "_={};{};if not(not _) then {} else {} end",
             v,
+            x_decl,
             body,
-            dead(rng, false)
+            dead(rng, false, "x")
         ),
         // repeat ... until <随机恒真条件>（单趟环，不再固定 not nil）
         4 => format!(
-            "_={};repeat if {} then {} else {} end until {}",
+            "_={};{};repeat if {} then {} else {} end until {}",
             v,
+            x_decl,
             truthy(rng, Some(v)),
             body,
-            dead(rng, true),
+            dead(rng, true, "x"),
             gen_until(rng)
         ),
         // repeat + 单侧死分支（无 break）
         5 => format!(
-            "_={};repeat if {} then {} end {} until {}",
+            "_={};{};repeat if {} then {} end {} until {}",
             v,
+            x_decl,
             falsy(rng, Some(v)),
-            dead(rng, true),
+            dead(rng, true, "x"),
             body,
             gen_until(rng)
         ),
         // for __=1,1（loop 变量名不能遮蔽刮擦 `_` —— BODY 里的 `_` 必须绑定到 entry hoist 的 upvalue）
         6 => format!(
-            "for __=1,1 do if __==1 then {} else {} end end",
+            "{}for __=1,1 do if __==1 then {} else {} end end",
+            x_decl,
             body,
-            dead(rng, true)
+            dead(rng, true, "x")
         ),
         // elseif 与 else if 两种拼写混用（随机构造链）
-        7 => elseif_chain(rng, v, body),
-        // 双层 if 嵌套（多层条件）
+        7 => format!(
+            "{};{}",
+            x_decl,
+            elseif_chain(rng, v, body, "x")
+        ),
+        // 双层 if 嵌套（多层条件）——返回值都用 x 计算，不再出现普通数字字面量
         8 => format!(
-            "_={};if {} then if {} then {} else return {} end else return {} end",
+            "_={};{};if {} then if {} then {} else return {} end else return {} end",
             v,
+            x_decl,
             truthy(rng, Some(v)),
             truthy(rng, Some(v)),
             body,
-            rng.range(2, 9999),
-            rng.range(2, 9999)
+            "x + 1",
+            "x * 2"
         ),
         // 用户例子：if not _ then else if _ and <恒真> or not _ then --代码 end end
         9 => format!(
-            "_={};if not _ then else if _ and {} or not _ then {} end end",
+            "_={};{};if not _ then else if _ and {} or not _ then {} end end",
             v,
+            x_decl,
             truthy(rng, Some(v)),
             body
         ),
         // 用户例子：if not _ then elseif not _ and <恒假> then else --代码 end
         10 => format!(
-            "_={};if not _ then elseif not _ and {} then else {} end",
+            "_={};{};if not _ then elseif not _ and {} then else {} end",
             v,
+            x_decl,
             falsy(rng, Some(v)),
             body
         ),
         // 用户例子：repeat a==2 and nil 风格（左侧 _==v 恒真、链上随机恒假原子）
         11 => format!(
-            "_={};repeat if _=={} and {} then else if {} then {} else break end end until {}",
+            "_={};{};repeat if _=={} and {} then else if {} then {} else break end end until {}",
             v,
+            x_decl,
             v,
             falsy(rng, Some(v)),
             truthy(rng, Some(v)),
             body,
             gen_until(rng)
         ),
-        // repeat + 双层 if（多层条件嵌套，无 break）
+        // repeat + 双层 if（多层条件嵌套，无 break）——返回值用 x 计算
         12 => format!(
-            "_={};repeat if {} then if {} then {} else do return {} end end else do return {} end end until {}",
+            "_={};{};repeat if {} then if {} then {} else do return {} end end else do return {} end end until {}",
             v,
+            x_decl,
             truthy(rng, Some(v)),
             const_true(rng),
             body,
-            rng.range(2, 9999),
-            rng.range(2, 9999),
+            "x + 1",
+            "x - 1",
             gen_until(rng)
         ),
         // for + elseif（混拼写）
         13 => {
             if rng.range(0, 2) == 0 {
                 format!(
-                    "for __=1,1 do if __==1 then {} else break end end",
+                    "{}for __=1,1 do if __==1 then {} else break end end",
+                    x_decl,
                     body
                 )
             } else {
                 format!(
-                    "for __=1,1 do if not __ then break else if __==1 then {} else break end end end",
+                    "{}for __=1,1 do if not __ then break else if __==1 then {} else break end end end",
+                    x_decl,
                     body
                 )
             }
         }
-        // 常量守卫嵌套 repeat（多层 + 非 scratch 判断）
+        // 常量守卫嵌套 repeat（多层 + 非 scratch 判断）——返回值用 x 计算
         14 => format!(
-            "if {} then repeat if {} then {} else {} end until {} else return {} end",
+            "{}if {} then repeat if {} then {} else {} end until {} else return {} end",
+            x_decl,
             const_true(rng),
             const_true(rng),
             body,
-            dead(rng, true),
+            dead(rng, true, "x"),
             gen_until(rng),
-            rng.range(2, 9999)
+            "x + 1"
         ),
         // 单趟 repeat：body 直接躺在环里，until 全随机
         15 => format!(
-            "_={};repeat {} until {}",
+            "_={};{};repeat {} until {}",
             v,
+            x_decl,
             body,
             gen_until(rng)
         ),
-        // 三层嵌套 if（字母常量比较在里面随机出现）
+        // 三层嵌套 if（字母常量比较在里面随机出现）——返回值用 x 计算
         16 => format!(
-            "_={};if {} then if {} then if {} then {} else do return {} end end else do return {} end end else do return {} end end",
+            "_={};{};if {} then if {} then if {} then {} else do return {} end end else do return {} end end else do return {} end end",
             v,
+            x_decl,
             truthy(rng, Some(v)),
             truthy(rng, None),
             truthy(rng, Some(v)),
             body,
-            rng.range(2, 9999),
-            rng.range(2, 9999),
-            rng.range(2, 9999)
+            "x + 1",
+            "x * 2",
+            "x - 1"
         ),
         // if <恒假> then dead else BODY end（反写单侧）
         17 => format!(
-            "if {} then {} else {} end",
+            "{}if {} then {} else {} end",
+            x_decl,
             falsy(rng, None),
-            dead(rng, false),
+            dead(rng, false, "x"),
             body
         ),
         // for + repeat 嵌套（两层循环 + 随机 until）
         18 => format!(
-            "for __=1,1 do repeat {} until {} end",
+            "{}for __=1,1 do repeat {} until {} end",
+            x_decl,
             body,
             gen_until(rng)
         ),
         // 双包裹：if <字母常量恒真> then repeat BODY until <随机> end
         19 => format!(
-            "if {} then repeat {} until {} end",
+            "{}if {} then repeat {} until {} end",
+            x_decl,
             const_true(rng),
             body,
             gen_until(rng)
         ),
         // 双层 repeat（嵌套单趟环）
         _ => format!(
-            "_={};repeat repeat {} until {} until {}",
+            "_={};{};repeat repeat {} until {} until {}",
             v,
+            x_decl,
             body,
             gen_until(rng),
             gen_until(rng)
@@ -494,34 +530,6 @@ pub fn wrap_stmt(body: &str, rng: &mut GenRng) -> String {
 
 /// 批量包装多条语句并拼接（用于 handler 函数体等）
 pub fn wrap_all(stmts: &[String], rng: &mut GenRng) -> String {
-    stmts
-        .iter()
-        .map(|s| wrap_stmt(s, rng))
-        .collect::<Vec<_>>()
-        .join("")
-}
-
-/// 包装一个多语句块（如 `local function ... end`、`local x = {...}` 等定义）。
-/// 每条顶层语句都独立包进随机控制流，适合把 sample2 风格的 `local function`
-/// 字符串解码器、`local o={...}` 查表定义等整体混淆。
-///
-/// 示例（混淆前）：
-///   local function Z(j)
-///     local j=m(j)
-///     if not j then return Y end
-///     return o and n[j]
-///   end
-///   local o={[256484652]={218,219,216,0xeb,221}}
-///   local function m(Y)
-///     local o=o[Y]
-///     local Y=''
-///     for p=0X_1_,#o do Y=Y..s((o[p]+256-0X_0_76)%256) end
-///     return Y
-///   end
-///
-/// 混淆后每条语句都被包进 `if/while/repeat/for` 等随机控制流，`_` 变量和
-/// `a>b` 等字母常量对比会出现在条件里，`dead` 分支放不可达代码。
-pub fn wrap_block(stmts: &[String], rng: &mut GenRng) -> String {
     stmts
         .iter()
         .map(|s| wrap_stmt(s, rng))

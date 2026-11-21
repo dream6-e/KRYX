@@ -362,10 +362,13 @@ impl Packer {
         for (i, inst) in insts_init.iter().enumerate() {
             let curr_st = insts_states[i];
             let next_st = insts_states[i+1];
-            // 每个状态分支用独立的 if...end，避免 elseif 链中间插入 st=Y; 语句导致语法错误
-            init_insts_loop.push_str(&format!("if st=={} then {}st={}; end;", curr_st, inst, next_st));
+            if i == 0 {
+                init_insts_loop.push_str(&format!("if st=={} then {}st={};", curr_st, inst, next_st));
+            } else {
+                init_insts_loop.push_str(&format!("elseif st=={} then {}st={};", curr_st, inst, next_st));
+            }
         }
-        init_insts_loop.push_str("break; end;");
+        init_insts_loop.push_str("else break end end;");
 
         // 每个 handler 的所有功能语句都被包进随机控制流（cf_wrap）
         let mut handlers_init = Vec::new();
@@ -477,10 +480,13 @@ impl Packer {
         for (i, h) in handlers_init.iter().enumerate() {
             let curr_st = handlers_states[i];
             let next_st = handlers_states[i+1];
-            // 每个状态分支用独立的 if...end，避免 elseif 链中间插入 st=Y; 语句导致语法错误
-            init_handlers_loop.push_str(&format!("if st=={} then {}st={}; end;", curr_st, h, next_st));
+            if i == 0 {
+                init_handlers_loop.push_str(&format!("if st=={} then {}st={};", curr_st, h, next_st));
+            } else {
+                init_handlers_loop.push_str(&format!("elseif st=={} then {}st={};", curr_st, h, next_st));
+            }
         }
-        init_handlers_loop.push_str("break; end;");
+        init_handlers_loop.push_str("else break end end;");
 
         let router_code = ControlFlowBuilder::build_fast_router(
             "s.pc", "s.insts", "inst", "s.handlers", "s.r_flg", "s.r_vals", "s.r_len", "s.tamper", "s.tail_flg", &format!("s.{}", f_unpack), rng
@@ -531,130 +537,75 @@ impl Packer {
         let mut sb = String::with_capacity(32768);
         sb.push_str(&format!("\nlocal function {f_entry}({v_data})\n    local _;\n    return ({{\n"));
         // ---------- m_bxor ----------
-        sb.push_str(&format!("        {m_bxor} = function(q, s, a_, b_, ra, rb, p, c_, rra, rrb, k_bxor)
-"));
-        sb.push_str(&format!("            {}
-", cf_wrap::wrap_stmt("k_bxor = a_ * 256 + b_;", rng)));
-        sb.push_str(&format!("            {}
-", cf_wrap::wrap_stmt("_ = s.memo[k_bxor]; if _ then return _ end", rng)));
-        sb.push_str(&format!("            {}
-", cf_wrap::wrap_stmt("ra, rb, p, c_ = a_, b_, 1, 0;", rng)));
-        let while_guard = cf_wrap::const_true(rng);
-        let while_inner = cf_wrap::wrap_stmt(
-            &format!("if ra > 0 or rb > 0 then {} else break end",
-                cf_wrap::wrap_stmt("rra, rrb = ra % 2, rb % 2; if rra ~= rrb then c_ = c_ + p end; ra, rb, p = s.floor((ra - rra) / 2), s.floor((rb - rrb) / 2), p * 2;", rng)
-            ),
-            rng,
-        );
-        sb.push_str(&format!("            {}
-", cf_wrap::wrap_stmt(&format!("while {} do {} end", while_guard, while_inner), rng)));
-        sb.push_str(&format!("            {}
-", cf_wrap::wrap_stmt("local function hg(dr, ...) repeat return c_ or nil until dr end;local df=hg(true)", rng)));
-        sb.push_str(&format!("            {}
-", cf_wrap::wrap_stmt("return df", rng)));
-        sb.push_str("        end,
-");
+        sb.push_str(&format!("        {m_bxor} = function(q, s, a_, b_, ra, rb, p, c_, rra, rrb, k_bxor)\n"));
+        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("k_bxor = a_ * 256 + b_;", rng)));
+        sb.push_str("            _ = s.memo[k_bxor];\n            if _ then return _ end;\n");
+        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("ra, rb, p, c_ = a_, b_, 1, 0;", rng)));
+        sb.push_str(&format!("            while {} do\n", cf_wrap::const_true(rng)));
+        sb.push_str("                if ra > 0 or rb > 0 then\n");
+        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("rra, rrb = ra % 2, rb % 2;", rng)));
+        sb.push_str("                    if rra ~= rrb then\n");
+        sb.push_str(&format!("                        {}\n", cf_wrap::wrap_stmt("c_ = c_ + p;", rng)));
+        sb.push_str("                    end\n");
+        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("ra, rb, p = s.floor((ra - rra) / 2), s.floor((rb - rrb) / 2), p * 2;", rng)));
+        sb.push_str("                else break end;\n            end;\n");
+        sb.push_str("            local function hg(dr, ...) repeat return c_ or nil until dr end;local df=hg(true)\n");
+        sb.push_str("            return df;\n        end,\n");
         // ---------- m_next ----------
-        sb.push_str(&format!("        {m_next} = function(q, s, r, c_, e, v, x, y, z, i, d_, b_, k, B, F)
-"));
-        sb.push_str(&format!("    {}
-", cf_wrap::wrap_stmt("B, F = s.byte, s.floor;", rng)));
-        sb.push_str(&format!("    {}
-", cf_wrap::wrap_stmt("i, d_, b_, k = s.idx, s.data, s.buf, s.kidx;", rng)));
-        let mut if_b_body = Vec::new();
-        if_b_body.push(cf_wrap::wrap_stmt("r = s.remove(b_, 1);", rng));
-        if_b_body.push(cf_wrap::wrap_stmt(&format!("c_ = q:{m_bxor}(s, r, s.k[k + 1]);"), rng));
-        if_b_body.push(cf_wrap::wrap_stmt("s.kidx = (k + 1) % 16;", rng));
-        if_b_body.push(cf_wrap::wrap_stmt("return c_;", rng));
-        let if_b_stmt = cf_wrap::wrap_stmt(
-            &format!("if #b_ > 0 then {} end", cf_wrap::wrap_all(&if_b_body, rng)),
-            rng,
-        );
-        sb.push_str(&format!("    {}
-", if_b_stmt));
-        sb.push_str(&format!("    {}
-", cf_wrap::wrap_stmt("if i > s.len then return nil end", rng)));
-        sb.push_str(&format!("    {}
-", cf_wrap::wrap_stmt("e = s.len - i + 1;", rng)));
-        let mut chain_body_5 = Vec::new();
-        chain_body_5.push(cf_wrap::wrap_stmt("v = (B(d_, i)-33) + (B(d_, i+1)-33)*85 + (B(d_, i+2)-33)*7225 + (B(d_, i+3)-33)*614125 + (B(d_, i+4)-33)*52200625;", rng));
-        chain_body_5.push(cf_wrap::wrap_stmt("z, y, x = v % 256, F(v / 256) % 256, F(v / 65536) % 256;", rng));
-        chain_body_5.push(cf_wrap::wrap_stmt("v = F(v / 16777216);", rng));
-        chain_body_5.push(cf_wrap::wrap_stmt("b_[1], b_[2], b_[3], b_[4] = v, x, y, z;", rng));
-        chain_body_5.push(cf_wrap::wrap_stmt("i = i + 5;", rng));
-        let mut chain_body_4 = Vec::new();
-        chain_body_4.push(cf_wrap::wrap_stmt("v = (B(d_, i)-33) + (B(d_, i+1)-33)*85 + (B(d_, i+2)-33)*7225 + (B(d_, i+3)-33)*614125;", rng));
-        chain_body_4.push(cf_wrap::wrap_stmt("y, x = v % 256, F(v / 256) % 256;", rng));
-        chain_body_4.push(cf_wrap::wrap_stmt("v = F(v / 65536);", rng));
-        chain_body_4.push(cf_wrap::wrap_stmt("b_[1], b_[2], b_[3] = v, x, y;", rng));
-        chain_body_4.push(cf_wrap::wrap_stmt("i = i + 4;", rng));
-        let mut chain_body_3 = Vec::new();
-        chain_body_3.push(cf_wrap::wrap_stmt("v = (B(d_, i)-33) + (B(d_, i+1)-33)*85 + (B(d_, i+2)-33)*7225;", rng));
-        chain_body_3.push(cf_wrap::wrap_stmt("x = v % 256;", rng));
-        chain_body_3.push(cf_wrap::wrap_stmt("v = F(v / 256);", rng));
-        chain_body_3.push(cf_wrap::wrap_stmt("b_[1], b_[2] = v, x;", rng));
-        chain_body_3.push(cf_wrap::wrap_stmt("i = i + 3;", rng));
-        let mut chain_body_2 = Vec::new();
-        chain_body_2.push(cf_wrap::wrap_stmt("v = (B(d_, i)-33) + (B(d_, i+1)-33)*85;", rng));
-        chain_body_2.push(cf_wrap::wrap_stmt("b_[1] = v;", rng));
-        chain_body_2.push(cf_wrap::wrap_stmt("i = i + 2;", rng));
-        let mut chain_body_else = Vec::new();
-        chain_body_else.push(cf_wrap::wrap_stmt("i = i + 1;", rng));
-        let chain = cf_wrap::wrap_stmt(
-            &format!(
-                "if e >= 5 then {} elseif e >= 4 then {} elseif e >= 3 then {} elseif e >= 2 then {} else {} end",
-                cf_wrap::wrap_all(&chain_body_5, rng),
-                cf_wrap::wrap_all(&chain_body_4, rng),
-                cf_wrap::wrap_all(&chain_body_3, rng),
-                cf_wrap::wrap_all(&chain_body_2, rng),
-                cf_wrap::wrap_all(&chain_body_else, rng),
-            ),
-            rng,
-        );
-        sb.push_str(&format!("    {}
-", chain));
-        sb.push_str(&format!("    {}
-", cf_wrap::wrap_stmt("s.idx = i;", rng)));
-        sb.push_str(&format!("    {}
-", cf_wrap::wrap_stmt(&format!("return q:{m_next}(s);"), rng)));
-        sb.push_str("        end,
-");
-
+        sb.push_str(&format!("        {m_next} = function(q, s, r, c_, e, v, x, y, z, i, d_, b_, k, B, F)\n"));
+        sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt("B, F = s.byte, s.floor;", rng)));
+        sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt("i, d_, b_, k = s.idx, s.data, s.buf, s.kidx;", rng)));
+        sb.push_str("    if #b_ > 0 then\n");
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("r = s.remove(b_, 1);", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt(&format!("c_ = q:{m_bxor}(s, r, s.k[k + 1]);"), rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("s.kidx = (k + 1) % 16;", rng)));
+        sb.push_str("        return c_;\n    end;\n");
+        sb.push_str("    if i > s.len then return nil end;\n");
+        sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt("e = s.len - i + 1;", rng)));
+        sb.push_str("    if e >= 5 then\n");
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d_, i)-33) + (B(d_, i+1)-33)*85 + (B(d_, i+2)-33)*7225 + (B(d_, i+3)-33)*614125 + (B(d_, i+4)-33)*52200625;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("z, y, x = v % 256, F(v / 256) % 256, F(v / 65536) % 256;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = F(v / 16777216);", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b_[1], b_[2], b_[3], b_[4] = v, x, y, z;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 5;", rng)));
+        sb.push_str("    elseif e >= 4 then\n");
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d_, i)-33) + (B(d_, i+1)-33)*85 + (B(d_, i+2)-33)*7225 + (B(d_, i+3)-33)*614125;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("y, x = v % 256, F(v / 256) % 256;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = F(v / 65536);", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b_[1], b_[2], b_[3] = v, x, y;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 4;", rng)));
+        sb.push_str("    elseif e >= 3 then\n");
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d_, i)-33) + (B(d_, i+1)-33)*85 + (B(d_, i+2)-33)*7225;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("x = v % 256;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = F(v / 256);", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b_[1], b_[2] = v, x;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 3;", rng)));
+        sb.push_str("    elseif e >= 2 then\n");
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("v = (B(d_, i)-33) + (B(d_, i+1)-33)*85;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("b_[1] = v;", rng)));
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 2;", rng)));
+        sb.push_str("    else\n");
+        sb.push_str(&format!("        {}\n", cf_wrap::wrap_stmt("i = i + 1;", rng)));
+        sb.push_str("    end;\n");
+        sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt("s.idx = i;", rng)));
+        sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt(&format!("return q:{m_next}(s);"), rng)));
+        sb.push_str("        end,\n");
         // ---------- m_init_map ----------
-        sb.push_str(&format!("        {m_init_map} = function(q, s, parts, i, kparts, kstr)
-"));
-        sb.push_str(&format!("            {}
-", cf_wrap::wrap_stmt(&format!("kparts = {{{combined_key_expr}}};"), rng)));
-        sb.push_str(&format!("            {}
-", cf_wrap::wrap_stmt("kstr = \"\";", rng)));
-        sb.push_str(&format!("            {}
-", cf_wrap::wrap_stmt("i = 1;", rng)));
-        // while true do ... break ... end
-        let mut while1_body = Vec::new();
-        while1_body.push(cf_wrap::wrap_stmt(&format!("if i > {num_actual_key_parts} then break end "), rng));
-        while1_body.push(cf_wrap::wrap_stmt("kstr = kstr .. kparts[i];", rng));
-        while1_body.push(cf_wrap::wrap_stmt("i = i + 1;", rng));
-        let while1 = cf_wrap::wrap_stmt(
-            &format!("while {} do {} end ", cf_wrap::const_true(rng), cf_wrap::wrap_all(&while1_body, rng)),
-            rng,
-        );
-        sb.push_str(&format!("            {}
-", while1));
-        sb.push_str(&format!("            {}
-", cf_wrap::wrap_stmt("i = 1;", rng)));
-        // while true do ... break ... end
-        let mut while2_body = Vec::new();
-        while2_body.push(cf_wrap::wrap_stmt("if i > #kstr then break end ", rng));
-        while2_body.push(cf_wrap::wrap_stmt("s.k[i] = s.byte(kstr, i);", rng));
-        while2_body.push(cf_wrap::wrap_stmt("i = i + 1;", rng));
-        let while2 = cf_wrap::wrap_stmt(
-            &format!("while {} do {} end ", cf_wrap::const_true(rng), cf_wrap::wrap_all(&while2_body, rng)),
-            rng,
-        );
-        sb.push_str(&format!("            {}
-", while2));
-        sb.push_str("        end,
-");
+        sb.push_str(&format!("        {m_init_map} = function(q, s, parts, i, kparts, kstr)\n"));
+        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt(&format!("kparts = {{{combined_key_expr}}};"), rng)));
+        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("kstr = \"\";", rng)));
+        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("i = 1;", rng)));
+        sb.push_str(&format!("            while {} do\n", cf_wrap::const_true(rng)));
+        sb.push_str(&format!("                if i > {num_actual_key_parts} then break end;\n"));
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt("kstr = kstr .. kparts[i];", rng)));
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt("i = i + 1;", rng)));
+        sb.push_str("            end;\n");
+        sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("i = 1;", rng)));
+        sb.push_str(&format!("            while {} do\n", cf_wrap::const_true(rng)));
+        sb.push_str("                if i > #kstr then break end;\n");
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt("s.k[i] = s.byte(kstr, i);", rng)));
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt("i = i + 1;", rng)));
+        sb.push_str("            end\n        end,\n");
         // ---------- m_init_insts / m_init_handlers ----------
         sb.push_str(&format!("        {m_init_insts} = function(q, s, st)\n            {init_insts_loop}        end,\n"));
         sb.push_str(&format!("        {m_init_handlers} = function(q, s, st)\n            {init_handlers_loop}        end,\n"));
