@@ -19,25 +19,109 @@
 // - 真实循环（m_bxor / m_next / 初始化循环）的守卫只用 const_true，不能引用 `_`
 // - DEAD 分支永远不执行（条件恒真/恒假由常量保证），其中的 return/break 仅需语法合法
 use crate::VM::VM_Backend::Generator::GenRng;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 thread_local! {
     /// entry 里随机抽取的 4 个常量值（a>b>c>d），用于判断条件的真假推算
     static CONST_VALS: Cell<[i64; 4]> = Cell::new([1500, 1000, 600, 200]);
+    /// 复用的数字池：整份产物只用这一小批数字，其余数字全部由计算得出
+    static NUM_POOL: RefCell<Vec<i64>> = RefCell::new(Vec::new());
 }
 
 /// 由 packer 在装配时写入 entry 常量（与 `local a,b,c,d = ...` 保持一致）
 pub fn set_constants(a: i64, b: i64, c: i64, d: i64) {
     CONST_VALS.with(|cell| cell.set([a, b, c, d]));
+    NUM_POOL.with(|p| p.borrow_mut().clear());
+}
+
+/// 重建复用数字池（整份产物共用这一小批数字；由 packer 在开始生成时调用一次）
+pub fn reset_numbers(rng: &mut GenRng) {
+    let mut v: Vec<i64> = Vec::new();
+    while v.len() < 9 {
+        let k = rng.range(2, 97) as i64;
+        if !v.contains(&k) {
+            v.push(k);
+        }
+    }
+    // 1 / 3 常在取模、步长里出现，固定留在池里
+    v.push(1);
+    v.push(3);
+    NUM_POOL.with(|p| *p.borrow_mut() = v);
 }
 
 fn const_vals() -> [i64; 4] {
     CONST_VALS.with(|cell| cell.get())
 }
 
-/// scratch 常量（恒真分支配合使用的初始值，保证 _>L 等关系成立）
-fn sval(rng: &mut GenRng) -> usize {
-    rng.range(100, 100000)
+/// Lua 的 `%` 是取模（结果符号跟除数走），Rust 的 `%` 是取余 —— 两者必须区分，
+/// 否则 `_%7` 在 `_` 为负时真假会算错。
+fn lua_mod(a: i64, m: i64) -> i64 {
+    if m == 0 {
+        return 0;
+    }
+    a.rem_euclid(m.abs())
+}
+
+/// 从**复用池**里取一个小数字（池子在每次生成开始时随机填一次，之后反复使用）。
+/// 用户 2026-11-18 要求：控制流不要到处写普通数字，同一批数字反复用。
+fn small(rng: &mut GenRng) -> i64 {
+    let empty = NUM_POOL.with(|p| p.borrow().is_empty());
+    if empty {
+        let mut v: Vec<i64> = Vec::new();
+        for _ in 0..7 {
+            v.push(rng.range(2, 97) as i64);
+        }
+        v.push(1);
+        v.push(3);
+        NUM_POOL.with(|p| *p.borrow_mut() = v);
+    }
+    let n = NUM_POOL.with(|p| p.borrow().len());
+    let i = rng.range(0, n);
+    NUM_POOL.with(|p| p.borrow()[i])
+}
+
+thread_local! {
+    /// 大数池（opaque predicate / 掩码用），同样反复复用
+    static BIG_POOL: RefCell<Vec<i64>> = RefCell::new(Vec::new());
+}
+
+/// 重建大数池
+pub fn set_big_pool(rng: &mut GenRng) {
+    let mut v: Vec<i64> = Vec::new();
+    for _ in 0..4 {
+        v.push(rng.range64(0x10000, 0x3FFFFFFF));
+    }
+    BIG_POOL.with(|p| *p.borrow_mut() = v);
+}
+
+/// 取一个复用的大数
+pub fn big_num(rng: &mut GenRng) -> i64 {
+    let empty = BIG_POOL.with(|p| p.borrow().is_empty());
+    if empty {
+        set_big_pool(rng);
+    }
+    let n = BIG_POOL.with(|p| p.borrow().len());
+    let i = rng.range(0, n);
+    BIG_POOL.with(|p| p.borrow()[i])
+}
+
+/// 一个 2..=m 的小模数（取模运算用）
+fn small_mod(rng: &mut GenRng, m: i64) -> i64 {
+    2 + small(rng) % m.max(2)
+}
+
+/// 数字的书写形态：十进制 / 十六进制 / 二进制混用，带 `_` 分隔（与 sample2 一致）
+fn fmt_num(rng: &mut GenRng, v: i64) -> String {
+    if v < 0 {
+        return format!("-{}", fmt_num(rng, -v));
+    }
+    match rng.range(0, 5) {
+        0 => format!("0x{:X}", v),
+        1 => format!("0b{:b}", v),
+        2 => format!("0x{:x}", v),
+        3 => format!("0X0_{:X}", v),
+        _ => format!("{}", v),
+    }
 }
 
 fn cmp_val(a: i64, b: i64, op: &str) -> bool {
@@ -76,50 +160,204 @@ fn pick_letter(rng: &mut GenRng) -> &'static str {
     LETTERS[rng.range(0, 4)]
 }
 
+/// `_` 初值：**全部由 a/b/c/d 与复用数字计算得出**，不再直接写一个大字面量。
+/// 返回 (语句文本, `_` 的最终已知值)。
+fn seed(rng: &mut GenRng) -> (String, i64) {
+    let vals = const_vals();
+    let (mut v, mut t) = match rng.range(0, 9) {
+        0 => {
+            let k = small(rng);
+            (vals[3] - k, format!("_={}-{}", LETTERS[3], fmt_num(rng, k)))
+        }
+        1 => {
+            let k = small(rng);
+            let k2 = small(rng);
+            let e = format!("_={}-{}+{}", LETTERS[2], fmt_num(rng, k), fmt_num(rng, k2));
+            (vals[2] - k + k2, e)
+        }
+        2 => {
+            let k = small_mod(rng, 61);
+            (lua_mod(vals[3], k), format!("_={}%{}", LETTERS[3], fmt_num(rng, k)))
+        }
+        3 => {
+            let k = small_mod(rng, 61);
+            let k2 = small(rng);
+            let e = format!("_={}%{}+{}", LETTERS[2], fmt_num(rng, k), fmt_num(rng, k2));
+            (lua_mod(vals[2], k) + k2, e)
+        }
+        4 => {
+            let k = small_mod(rng, 40);
+            (vals[1] * k, format!("_={}*{}", LETTERS[1], fmt_num(rng, k)))
+        }
+        5 => {
+            let k = small_mod(rng, 40);
+            let k2 = small(rng);
+            let e = format!("_={}*{}+{}", LETTERS[1], fmt_num(rng, k), fmt_num(rng, k2));
+            (vals[1] * k + k2, e)
+        }
+        6 => {
+            let k = small_mod(rng, 20);
+            let e = format!("_={}-{}*{}", LETTERS[0], LETTERS[2], fmt_num(rng, k));
+            (vals[0] - vals[2] * k, e)
+        }
+        7 => {
+            let k = small_mod(rng, 61);
+            let k2 = small_mod(rng, 12);
+            let e = format!("_={}%{}*{}", LETTERS[0], fmt_num(rng, k), fmt_num(rng, k2));
+            (lua_mod(vals[0], k) * k2, e)
+        }
+        _ => {
+            let k = small(rng);
+            (k, format!("_={}", fmt_num(rng, k)))
+        }
+    };
+    // 「同一个变量不断计算」：在初值上再做 0~3 步算术，`_` 被反复读改写
+    let steps = rng.range(0, 4);
+    for _ in 0..steps {
+        match rng.range(0, 6) {
+            0 => {
+                let k = small(rng);
+                v = v.saturating_add(k);
+                t.push_str(&format!(";_=_+{}", fmt_num(rng, k)));
+            }
+            1 => {
+                let k = small(rng);
+                if v >= k {
+                    v -= k;
+                    t.push_str(&format!(";_=_-{}", fmt_num(rng, k)));
+                } else {
+                    v += k;
+                    t.push_str(&format!(";_=_+{}", fmt_num(rng, k)));
+                }
+            }
+            2 => {
+                let k = small_mod(rng, 9);
+                if v.abs() < 100_000_000 {
+                    v = v.saturating_mul(k);
+                    t.push_str(&format!(";_=_*{}", fmt_num(rng, k)));
+                } else {
+                    let k2 = small(rng);
+                    v = lua_mod(v, 1000) + k2;
+                    t.push_str(&format!(";_=_%{}+{}", fmt_num(rng, 1000), fmt_num(rng, k2)));
+                }
+            }
+            3 => {
+                let k = small(rng);
+                let m = k + small_mod(rng, 30);
+                v = lua_mod(v + k, m);
+                t.push_str(&format!(";_=(_+{})%{}", fmt_num(rng, k), fmt_num(rng, m)));
+            }
+            4 => {
+                let k = small_mod(rng, 9);
+                let m = k * 7 + small(rng);
+                v = lua_mod(v * k, m);
+                t.push_str(&format!(";_=(_*{})%{}", fmt_num(rng, k), fmt_num(rng, m)));
+            }
+            _ => {
+                let k = small_mod(rng, 20);
+                v -= lua_mod(v, k);
+                t.push_str(&format!(";_=_-_%{}", fmt_num(rng, k)));
+            }
+        }
+    }
+    (t, v)
+}
+
+/// 恒等算术噪音：`a+0>b` 这种写法里的 0 也换成复用数字（`(a+3-3)>b`）。
 fn fmt_letter_cmp(rng: &mut GenRng, l1: &str, op: &str, l2: &str) -> String {
-    // 偶尔在比较两侧加一点恒等算术噪音（a+0>b 之类），数学上不改变真假
     match rng.range(0, 4) {
         0 | 3 => format!("{}{}{}", l1, op, l2),
-        1 => format!("({}+0){}{}", l1, op, l2),
-        _ => format!("{}{}({}-0)", l1, op, l2),
+        1 => {
+            let k = small(rng);
+            format!("({}+{}-{}){}{}", l1, fmt_num(rng, k), fmt_num(rng, k), op, l2)
+        }
+        _ => {
+            let k = small(rng);
+            format!("{}{}({}-{}+{})", l1, op, l2, fmt_num(rng, k), fmt_num(rng, k))
+        }
     }
 }
 
-/// `_` 相关的原子判断（真假按 v 精确推算）
+/// `_` 相关的原子判断：两侧都是**算出来的**，`_` 的实际值按 v 精确推算
 fn atom_underscore(rng: &mut GenRng, v: i64) -> (String, bool) {
-    match rng.range(0, 5) {
-        // 与任意随机常数直接比较（如 _>5031）
+    let k = small(rng);
+    let k2 = small(rng);
+    match rng.range(0, 8) {
+        // (_+k) op k2
         0 => {
-            let b = rng.range(0, (v * 2) as usize) as i64;
             let op = pick_op(rng);
-            (format!("_{}{}", op, b), cmp_val(v, b, op))
+            (
+                format!("(_+{}){}{}", fmt_num(rng, k), op, fmt_num(rng, k2)),
+                cmp_val(v + k, k2, op),
+            )
         }
-        // 带加法噪音的比较（如 (_+7)>=200）
+        // (_*k+k2) op k3
         1 => {
-            let k = rng.range(1, 30) as i64;
-            let b = rng.range(0, (v + k + 999) as usize) as i64;
+            let k3 = small(rng);
             let op = pick_op(rng);
-            (format!("(_+{}){}{}", k, op, b), cmp_val(v + k, b, op))
+            (
+                format!("(_*{}+{}){}{}", fmt_num(rng, k), fmt_num(rng, k2), op, fmt_num(rng, k3)),
+                cmp_val(v * k + k2, k3, op),
+            )
         }
-        // 取模判余（如 _%7==3）
+        // _%m op r（取模判余）
         2 => {
-            let m = rng.range(3, 97) as i64;
-            let r = rng.range(0, m as usize) as i64;
+            let m = small_mod(rng, 61);
+            let r = lua_mod(k, m);
             let op = if rng.range(0, 2) == 0 { "==" } else { "~=" };
-            (format!("_%{}{}{}", m, op, r), cmp_val(v % m, r, op))
+            (
+                format!("_%{}{}{}", fmt_num(rng, m), op, fmt_num(rng, r)),
+                cmp_val(lua_mod(v, m), r, op),
+            )
         }
-        // 乘法比较（如 (3*_)>120）
+        // (_+k)%m op r
         3 => {
-            let m = [2i64, 3, 5, 7][rng.range(0, 4)];
-            let b = rng.range(0, (v * m) as usize + 1) as i64;
-            let op = pick_op(rng);
-            (format!("({}*_){}{}", m, op, b), cmp_val(v * m, b, op))
+            let m = small_mod(rng, 61);
+            let r = lua_mod(k2, m);
+            let op = if rng.range(0, 2) == 0 { "==" } else { "~=" };
+            (
+                format!("(_+{})%{}{}{}", fmt_num(rng, k), fmt_num(rng, m), op, fmt_num(rng, r)),
+                cmp_val(lua_mod(v + k, m), r, op),
+            )
         }
-        // 与小常数直接比较（老式 _>42 形态）
-        _ => {
-            let b = rng.range(0, 99) as i64;
+        // _ op a%k（与常量变量算出来的值比）
+        4 => {
+            let vals = const_vals();
+            let m = small_mod(rng, 61);
             let op = pick_op(rng);
-            (format!("_{}{}", op, b), cmp_val(v, b, op))
+            (
+                format!("_{}{}%{}", op, LETTERS[0], fmt_num(rng, m)),
+                cmp_val(v, lua_mod(vals[0], m), op),
+            )
+        }
+        // (_*k) op d%m
+        5 => {
+            let vals = const_vals();
+            let m = small_mod(rng, 61);
+            let op = pick_op(rng);
+            (
+                format!("(_*{}){}{}%{}", fmt_num(rng, k), op, LETTERS[3], fmt_num(rng, m)),
+                cmp_val(v * k, lua_mod(vals[3], m), op),
+            )
+        }
+        // _ op (_%m+k)：等式两侧都引用同一个 `_`
+        6 => {
+            let m = small_mod(rng, 61);
+            let op = pick_op(rng);
+            (
+                format!("_{}(_%{}+{})", op, fmt_num(rng, m), fmt_num(rng, k2)),
+                cmp_val(v, lua_mod(v, m) + k2, op),
+            )
+        }
+        // (_-k) op b%m
+        _ => {
+            let vals = const_vals();
+            let m = small_mod(rng, 61);
+            let op = pick_op(rng);
+            (
+                format!("(_-{}){}{}%{}", fmt_num(rng, k), op, LETTERS[1], fmt_num(rng, m)),
+                cmp_val(v - k, lua_mod(vals[1], m), op),
+            )
         }
     }
 }
@@ -139,30 +377,51 @@ fn atom_letter(rng: &mut GenRng) -> (String, bool) {
     )
 }
 
-/// 字母常量与随机整数比较（如 a>831、247<d），真假精确推算
+/// 字母常量与**计算出来的数字**比较（如 a>d%17+3），真假精确推算
 fn atom_letter_const(rng: &mut GenRng) -> (String, bool) {
     let vals = const_vals();
     let l = pick_letter(rng);
-    let b = rng.range(0, 9999) as i64;
     let op = pick_op(rng);
+    let other = if rng.range(0, 3) == 0 { LETTERS[3] } else { LETTERS[2] };
+    let m = small_mod(rng, 61);
+    let k = small(rng);
+    let rhs = lua_mod(letter_val(&vals, other), m) + k;
+    let rhs_txt = format!("{}%{}+{}", other, fmt_num(rng, m), fmt_num(rng, k));
     if rng.range(0, 4) == 0 {
-        (format!("{}{}{}", b, op, l), cmp_val(b, letter_val(&vals, l), op))
+        (
+            format!("{}{}{}", rhs_txt, op, l),
+            cmp_val(rhs, letter_val(&vals, l), op),
+        )
     } else {
-        (format!("{}{}{}", l, op, b), cmp_val(letter_val(&vals, l), b, op))
+        (
+            format!("{}{}{}", l, op, rhs_txt),
+            cmp_val(letter_val(&vals, l), rhs, op),
+        )
     }
 }
 
-/// 常数与常数比较（如 512>308），真假精确推算；偶尔带算术噪音
+/// 「常数」比较也改成两边都是计算式（如 a%17 > d%13+2），不再出现两个裸字面量
 fn atom_const(rng: &mut GenRng) -> (String, bool) {
-    let a = rng.range(0, 9999) as i64;
-    let b = rng.range(0, 9999) as i64;
+    let vals = const_vals();
     let op = pick_op(rng);
-    if rng.range(0, 3) == 0 {
-        let k = rng.range(1, 60) as i64;
-        (format!("({}+{}){}{}", a, k, op, b), cmp_val(a + k, b, op))
-    } else {
-        (format!("{}{}{}", a, op, b), cmp_val(a, b, op))
-    }
+    let m1 = small_mod(rng, 61);
+    let m2 = small_mod(rng, 61);
+    let k = small(rng);
+    // 文本固定是 `a%m1 op d%m2+k`，真值必须用同样的 a / d，不能另抽字母
+    let lhs = lua_mod(vals[0], m1);
+    let rhs = lua_mod(vals[3], m2) + k;
+    (
+        format!(
+            "{}%{}{}{}%{}+{}",
+            LETTERS[0],
+            fmt_num(rng, m1),
+            op,
+            LETTERS[3],
+            fmt_num(rng, m2),
+            fmt_num(rng, k)
+        ),
+        cmp_val(lhs, rhs, op),
+    )
 }
 
 /// 可选的加法噪音二字母比较（如 a+k>b）
@@ -281,44 +540,55 @@ fn gen_until(rng: &mut GenRng) -> String {
     gen_bool(rng, None, true)
 }
 
-/// 死分支：永不执行。return 随机数字/变量，或 loop 上下文里 break。
-fn dead(rng: &mut GenRng, in_loop: bool) -> String {
-    if in_loop && rng.range(0, 10) < 3 {
-        if rng.range(0, 2) == 0 {
-            return "break".into();
-        }
-        return format!("return {}", rng.range(2, 9999));
-    }
+/// 死分支：永不执行。返回值同样来自**计算**，不写裸大数字。
+fn dead(rng: &mut GenRng) -> String {
     match rng.range(0, 4) {
-        0 => format!("return {}", rng.range(2, 9999)),
-        1 => format!("do _ = {}; return _ end", rng.range(2, 9999)),
-        2 => "return _".into(),
-        _ => format!("return {} + {}", rng.range(2, 999), rng.range(2, 999)),
+        0 => {
+            let k = small(rng);
+            format!("return {}+{}", LETTERS[1], fmt_num(rng, k))
+        }
+        1 => {
+            let k = small(rng);
+            format!("do local _=_*{};return _ end", fmt_num(rng, k))
+        }
+        // 注意：不能写 `return _` / `_=_;return _`。死分支总在 BODY **之后**求值
+        // （`if <恒真> then BODY else DEAD end`），此时 `_` 已被 BODY 重写，
+        // 可能是 nil，一旦走到这里就返回 nil，把功能语句的结果吞掉。
+        2 => {
+            let k = small(rng);
+            format!("return {}-{}", LETTERS[1], fmt_num(rng, k))
+        }
+        _ => {
+            let k = small(rng);
+            let m = small_mod(rng, 40);
+            format!("return {}%{}+{}", LETTERS[0], fmt_num(rng, m), fmt_num(rng, k))
+        }
     }
 }
 
 /// elseif 与 else if 两种拼写混用：随机构造链
-fn elseif_chain(rng: &mut GenRng, v: i64, body: &str) -> String {
+fn elseif_chain(rng: &mut GenRng, body: &str) -> String {
+    let (sd, v) = seed(rng);
     let use_elseif = rng.range(0, 2) == 0;
     if use_elseif {
         format!(
-            "_={};if {} then {} elseif {} then {} else {} end",
-            v,
+            "{};if {} then {} elseif {} then {} else {} end",
+            sd,
             falsy(rng, Some(v)),
-            dead(rng, false),
+            dead(rng),
             truthy(rng, Some(v)),
             body,
-            dead(rng, false)
+            dead(rng)
         )
     } else {
         format!(
-            "_={};if {} then {} else if {} then {} else {} end end",
-            v,
+            "{};if {} then {} else if {} then {} else {} end end",
+            sd,
             falsy(rng, Some(v)),
-            dead(rng, false),
+            dead(rng),
             truthy(rng, Some(v)),
             body,
-            dead(rng, false)
+            dead(rng)
         )
     }
 }
@@ -326,10 +596,6 @@ fn elseif_chain(rng: &mut GenRng, v: i64, body: &str) -> String {
 /// 把一条功能语句包进随机控制流（每次混淆结果都不同）。
 /// `body` 必须是单条 Lua 语句（可含内部任意控制流），不含尾 `end` 匹配问题。
 pub fn wrap_stmt(body: &str, rng: &mut GenRng) -> String {
-    let v = sval(rng) as i64;
-    // sample2 最核心的控制流形态：哨兵状态码 + `repeat ... until false` +
-    // `continue`/`break` 出口。约 35% 的语句走这条路径，其余走下面的
-    // if/repeat/for 单趟包裹。
     // 状态机在 BODY 之后还要补 `break;`，所以 BODY 自身不能已经带走控制流
     //（`return` / `break` / `continue` 都必须是块的最后一条语句，后面不能再接东西）。
     let body_has_jump = body
@@ -338,179 +604,139 @@ pub fn wrap_stmt(body: &str, rng: &mut GenRng) -> String {
     if !body_has_jump && rng.range(0, 100) < 40 {
         return state_machine(body, rng);
     }
+    // 每个 wrapper 都先跑一段 `_` 的计算链，后续判断全部引用这个 `_`
+    let (sd, v) = seed(rng);
     // 外层统一补分号：wrapper 以 end 收尾时，后续 `st=...` 等 token 不会被粘成一个标识符
     let out = match rng.range(0, 20) {
         // if + 随机恒真条件（scratch 复用 + 恒真判断）
-        0 => format!(
-            "_={};if {} then {} else {} end",
-            v,
-            truthy(rng, Some(v)),
-            body,
-            dead(rng, false)
-        ),
+        0 => format!("{};if {} then {} else {} end", sd, truthy(rng, Some(v)), body, dead(rng)),
         // 纯常量守卫 if（不碰 _）
-        1 => format!(
-            "if {} then {} else {} end",
-            const_true(rng),
-            body,
-            dead(rng, false)
-        ),
+        1 => format!("if {} then {} else {} end", const_true(rng), body, dead(rng)),
         // if not _ then ... else ...（scratch 恒真取反恒假）
-        2 => format!(
-            "_={};if not _ then {} else {} end",
-            v,
-            dead(rng, false),
-            body
-        ),
+        2 => format!("{};if not _ then {} else {} end", sd, dead(rng), body),
         // 双 not：if not(not _)
-        3 => format!(
-            "_={};if not(not _) then {} else {} end",
-            v,
-            body,
-            dead(rng, false)
-        ),
+        3 => format!("{};if not(not _) then {} else {} end", sd, body, dead(rng)),
         // repeat ... until <随机恒真条件>（单趟环，不再固定 not nil）
         4 => format!(
-            "_={};repeat if {} then {} else {} end until {}",
-            v,
+            "{};repeat if {} then {} else {} end until {}",
+            sd,
             truthy(rng, Some(v)),
             body,
-            dead(rng, true),
+            dead(rng),
             gen_until(rng)
         ),
-        // repeat + 单侧死分支（无 break）
+        // repeat + 单侧死分支
         5 => format!(
-            "_={};repeat if {} then {} end {} until {}",
-            v,
+            "{};repeat if {} then {} end {} until {}",
+            sd,
             falsy(rng, Some(v)),
-            dead(rng, true),
+            dead(rng),
             body,
             gen_until(rng)
         ),
         // for __=1,1（loop 变量名不能遮蔽刮擦 `_` —— BODY 里的 `_` 必须绑定到 entry hoist 的 upvalue）
-        6 => format!(
-            "for __=1,1 do if __==1 then {} else {} end end",
-            body,
-            dead(rng, true)
-        ),
+        6 => format!("for __=1,1 do if __==1 then {} else {} end end", body, dead(rng)),
         // elseif 与 else if 两种拼写混用（随机构造链）
-        7 => elseif_chain(rng, v, body),
-        // 双层 if 嵌套（多层条件）
-        8 => format!(
-            "_={};if {} then if {} then {} else return {} end else return {} end",
-            v,
-            truthy(rng, Some(v)),
-            truthy(rng, Some(v)),
-            body,
-            rng.range(2, 9999),
-            rng.range(2, 9999)
-        ),
+        7 => elseif_chain(rng, body),
+        // 双层 if 嵌套（多层条件）：死分支的返回值也是算出来的
+        8 => {
+            let k = small(rng);
+            let k2 = small(rng);
+            format!(
+                "{};if {} then if {} then {} else return {}+{} end else return {}-{} end",
+                sd,
+                truthy(rng, Some(v)),
+                truthy(rng, Some(v)),
+                body,
+                LETTERS[2],
+                fmt_num(rng, k),
+                LETTERS[3],
+                fmt_num(rng, k2)
+            )
+        }
         // 用户例子：if not _ then else if _ and <恒真> or not _ then --代码 end end
-        9 => format!(
-            "_={};if not _ then else if _ and {} or not _ then {} end end",
-            v,
-            truthy(rng, Some(v)),
-            body
-        ),
+        9 => format!("{};if not _ then else if _ and {} or not _ then {} end end", sd, truthy(rng, Some(v)), body),
         // 用户例子：if not _ then elseif not _ and <恒假> then else --代码 end
-        10 => format!(
-            "_={};if not _ then elseif not _ and {} then else {} end",
-            v,
-            falsy(rng, Some(v)),
-            body
-        ),
-        // 用户例子：repeat a==2 and nil 风格（左侧 _==v 恒真、链上随机恒假原子）
+        10 => format!("{};if not _ then elseif not _ and {} then else {} end", sd, falsy(rng, Some(v)), body),
+        // 用户例子：repeat _==v and nil 风格
         11 => format!(
-            "_={};repeat if _=={} and {} then else if {} then {} else break end end until {}",
-            v,
-            v,
+            "{};repeat if _==_ and {} then else if {} then {} else break end end until {}",
+            sd,
             falsy(rng, Some(v)),
             truthy(rng, Some(v)),
             body,
             gen_until(rng)
         ),
-        // repeat + 双层 if（多层条件嵌套，无 break）
-        12 => format!(
-            "_={};repeat if {} then if {} then {} else do return {} end end else do return {} end end until {}",
-            v,
-            truthy(rng, Some(v)),
-            const_true(rng),
-            body,
-            rng.range(2, 9999),
-            rng.range(2, 9999),
-            gen_until(rng)
-        ),
+        // repeat + 双层 if（多层条件嵌套）
+        12 => {
+            let k = small(rng);
+            let k2 = small(rng);
+            format!(
+                "{};repeat if {} then if {} then {} else do return {}+{} end end else do return {}*{} end end until {}",
+                sd,
+                truthy(rng, Some(v)),
+                const_true(rng),
+                body,
+                LETTERS[1],
+                fmt_num(rng, k),
+                LETTERS[3],
+                fmt_num(rng, k2),
+                gen_until(rng)
+            )
+        }
         // for + elseif（混拼写）
         13 => {
             if rng.range(0, 2) == 0 {
-                format!(
-                    "for __=1,1 do if __==1 then {} else break end end",
-                    body
-                )
+                format!("for __=1,1 do if __==1 then {} else break end end", body)
             } else {
-                format!(
-                    "for __=1,1 do if not __ then break else if __==1 then {} else break end end end",
-                    body
-                )
+                format!("for __=1,1 do if not __ then break else if __==1 then {} else break end end end", body)
             }
         }
         // 常量守卫嵌套 repeat（多层 + 非 scratch 判断）
-        14 => format!(
-            "if {} then repeat if {} then {} else {} end until {} else return {} end",
-            const_true(rng),
-            const_true(rng),
-            body,
-            dead(rng, true),
-            gen_until(rng),
-            rng.range(2, 9999)
-        ),
+        14 => {
+            let k = small(rng);
+            format!(
+                "if {} then repeat if {} then {} else {} end until {} else return {}%{} end",
+                const_true(rng),
+                const_true(rng),
+                body,
+                dead(rng),
+                gen_until(rng),
+                LETTERS[0],
+                fmt_num(rng, k)
+            )
+        }
         // 单趟 repeat：body 直接躺在环里，until 全随机
-        15 => format!(
-            "_={};repeat {} until {}",
-            v,
-            body,
-            gen_until(rng)
-        ),
+        15 => format!("{};repeat {} until {}", sd, body, gen_until(rng)),
         // 三层嵌套 if（字母常量比较在里面随机出现）
-        16 => format!(
-            "_={};if {} then if {} then if {} then {} else do return {} end end else do return {} end end else do return {} end end",
-            v,
-            truthy(rng, Some(v)),
-            truthy(rng, None),
-            truthy(rng, Some(v)),
-            body,
-            rng.range(2, 9999),
-            rng.range(2, 9999),
-            rng.range(2, 9999)
-        ),
+        16 => {
+            let k = small(rng);
+            let k2 = small(rng);
+            format!(
+                "{};if {} then if {} then if {} then {} else do return {}%{} end end else do return {}-{} end end else do return b+{} end end",
+                sd,
+                truthy(rng, Some(v)),
+                truthy(rng, None),
+                truthy(rng, Some(v)),
+                body,
+                LETTERS[2],
+                fmt_num(rng, k),
+                LETTERS[1],
+                fmt_num(rng, k2),
+                {
+                    let k3 = small(rng);
+                    fmt_num(rng, k3)
+                }
+            )
+        }
         // if <恒假> then dead else BODY end（反写单侧）
-        17 => format!(
-            "if {} then {} else {} end",
-            falsy(rng, None),
-            dead(rng, false),
-            body
-        ),
+        17 => format!("if {} then {} else {} end", falsy(rng, None), dead(rng), body),
         // for + repeat 嵌套（两层循环 + 随机 until）
-        18 => format!(
-            "for __=1,1 do repeat {} until {} end",
-            body,
-            gen_until(rng)
-        ),
+        18 => format!("for __=1,1 do repeat {} until {} end", body, gen_until(rng)),
         // 双包裹：if <字母常量恒真> then repeat BODY until <随机> end
-        19 => format!(
-            "if {} then repeat {} until {} end",
-            const_true(rng),
-            body,
-            gen_until(rng)
-        ),
+        19 => format!("if {} then repeat {} until {} end", const_true(rng), body, gen_until(rng)),
         // 双层 repeat（嵌套单趟环）
-        _ => format!(
-            "_={};repeat repeat {} until {} until {}",
-            v,
-            body,
-            gen_until(rng),
-            gen_until(rng)
-        ),
+        _ => format!("{};repeat repeat {} until {} until {}", sd, body, gen_until(rng), gen_until(rng)),
     };
     format!("{};", out)
 }
@@ -577,18 +803,52 @@ pub fn wrap_block(stmts: &[String], rng: &mut GenRng) -> String {
 // 状态迁移值由生成期精确推算，保证 BODY 恰好执行一次、然后从循环里跳出。
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 状态字面量：`0x`/`0X`/`0b`/`0B`/十进制混用，含前导零与 `_`（与 sample2 一致）
+/// 状态字面量：`0x`/`0X`/`0b`/`0B`/十进制混用，含前导零与 `_`（与 sample2 一致）。
+/// 约 30% 的场合改成**由复用数字算出来**的等价表达式（`0X50+3-3`、`-(-94)`），
+/// 让控制流里的数字不是一堆孤立常量。
 fn state_lit(rng: &mut GenRng, v: u32) -> String {
-    if rng.range(0, 100) < 12 {
-        // 表达式通胀：`-(-0x..)` 这类
-        let inner = state_lit_plain(rng, v);
-        return format!("-(-{})", inner);
+    match rng.range(0, 10) {
+        0 | 1 => {
+            let k = small(rng) as u32 % 40 + 1;
+            if v > k {
+                let a = state_lit_plain(rng, v - k);
+                let b = state_lit_plain(rng, k);
+                return format!("({}+{})", a, b);
+            }
+            let inner = state_lit_plain(rng, v);
+            format!("-(-{})", inner)
+        }
+        2 => {
+            let k = small(rng) as u32 % 20 + 1;
+            let m = v + k;
+            let a = state_lit_plain(rng, m);
+            let b = state_lit_plain(rng, k);
+            format!("({}-{})", a, b)
+        }
+        _ => state_lit_plain(rng, v),
     }
-    state_lit_plain(rng, v)
+}
+
+/// 状态机变量名池（与 sample2 的 `W` / `m` / `h` / `u` / `Z` / `L` 同名风格）
+fn state_var(rng: &mut GenRng) -> String {
+    const VARS: [&str; 6] = ["W", "m", "h", "u", "Z", "L"];
+    VARS[rng.range(0, 6)].to_string()
+}
+
+/// 状态机的状态表：大小 n，值都在 2..200，互不相同
+fn state_set(rng: &mut GenRng, n: usize) -> Vec<u32> {
+    let mut states: Vec<u32> = Vec::with_capacity(n);
+    while states.len() < n {
+        let v = small(rng) as u32 % 199 + 2;
+        if !states.contains(&v) {
+            states.push(v);
+        }
+    }
+    states
 }
 
 fn state_lit_plain(rng: &mut GenRng, v: u32) -> String {
-    match rng.range(0, 3) {
+    match rng.range(0, 4) {
         0 => {
             let mut s = format!("{:X}", v);
             if rng.range(0, 2) == 0 {
@@ -658,16 +918,9 @@ fn eq_test(rng: &mut GenRng, var: &str, v: u32) -> String {
 /// `while true do ... end` 版本的状态机（sample2 的 `D2` / `VP` / `i2` 形态）。
 /// 出口只有 `break` / `return`，与外层语句继续衔接。
 pub fn state_machine_while(body: &str, rng: &mut GenRng) -> String {
-    const VARS: [&str; 6] = ["W", "m", "h", "u", "Z", "L"];
-    let var = VARS[rng.range(0, 6)].to_string();
+    let var = state_var(rng);
     let n = rng.range(3, 6);
-    let mut states: Vec<u32> = Vec::with_capacity(n);
-    while states.len() < n {
-        let v = rng.range(2, 200) as u32;
-        if !states.contains(&v) {
-            states.push(v);
-        }
-    }
+    let states = state_set(rng, n);
     let body_idx = if rng.range(0, 100) < 70 { n - 1 } else { n - 2 };
     let use_elseif = rng.range(0, 2) == 0;
 
@@ -735,16 +988,9 @@ pub fn state_machine(body: &str, rng: &mut GenRng) -> String {
     if rng.range(0, 100) < 45 {
         return state_machine_while(body, rng);
     }
-    const VARS: [&str; 6] = ["W", "m", "h", "u", "Z", "L"];
-    let var = VARS[rng.range(0, 6)].to_string();
+    let var = state_var(rng);
     let n = rng.range(3, 6);
-    let mut states: Vec<u32> = Vec::with_capacity(n);
-    while states.len() < n {
-        let v = rng.range(2, 200) as u32;
-        if !states.contains(&v) {
-            states.push(v);
-        }
-    }
+    let states = state_set(rng, n);
     // BODY 放在靠后的状态里（前面全是迁移态），偶尔提前一位
     let body_idx = if rng.range(0, 100) < 70 { n - 1 } else { n - 2 };
     // `elseif` 链（1 个 end）与 `else if` 嵌套（n 个 end）两种拼写混用，

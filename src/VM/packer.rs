@@ -482,10 +482,16 @@ impl Packer {
         }
         init_handlers_loop.push_str("break; end;");
 
+        // 数字池只跟控制流的规模挂钩：整个解码器只用这 11 个数，其余全部由计算得出。
+        // 必须在生成 router / 各 handler 之前重置一次，再在 router 生成后**再**重置，
+        // 这样控制流内部的复用池也是同一套固定数字（用户要求：同一批数字反复用）。
+        cf_wrap::reset_numbers(rng);
+        cf_wrap::set_big_pool(&mut *rng);
         let router_code = ControlFlowBuilder::build_fast_router(
             "s.pc", "s.insts", "inst", "s.handlers", "s.r_flg", "s.r_vals", "s.r_len", "s.tamper", "s.tail_flg", &format!("s.{}", f_unpack), rng
         );
 
+        cf_wrap::reset_numbers(rng);
         let num_key_parts = rng.range(3, 7);
         let mut key_boundaries = Vec::new();
         for _ in 0..num_key_parts.saturating_sub(1) {

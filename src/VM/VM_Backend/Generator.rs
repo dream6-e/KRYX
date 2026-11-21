@@ -125,7 +125,8 @@ impl ControlFlowBuilder {
     }
 
     pub fn generate_opaque_predicate(val: i64, var_name: &str, comp_op: &str, keys: &CipherKeys, rng: &mut GenRng) -> String {
-        let key = rng.range(0x10, 0xFFF) as i64;
+        // opaque predicate 里的 key / 伪常量全部取自复用池，不再每次抽新的大数
+        let key = crate::VM::cf_wrap::big_num(rng);
         let mutated_val = val.wrapping_add(key);
         format!("{}[{}][{}]({}<={} and {} or {},{}){}{}", 
             keys.tbl_p,
@@ -134,7 +135,7 @@ impl ControlFlowBuilder {
             var_name, 
             var_name, 
             var_name, 
-            Self::format_num(rng.range(0, 0xFFFF) as i64, rng), 
+            Self::format_num(crate::VM::cf_wrap::big_num(rng), rng), 
             Self::format_num(key, rng), 
             comp_op,
             Self::format_num(mutated_val, rng)
@@ -713,13 +714,13 @@ impl GenRng {
         if depth == 0 { return self.format_num(val); }
         let style = self.range(0, 10);
         if style < 4 {
-            let huge = self.range64(0x10000000, 0x7FFFFFFF);
+            let huge = crate::VM::cf_wrap::big_num(self);
             format!("({}-{})", self.obfuscate_num(val.wrapping_add(huge), depth - 1, keys), self.obfuscate_num(huge, depth - 1, keys))
         } else if style < 7 {
-            let mask = self.range64(0x10000000, 0x3FFFFFFF);
+            let mask = crate::VM::cf_wrap::big_num(self);
             format!("{}[{}][{}]({},{})", keys.tbl_p, self.format_num(keys.grp1 as i64), self.format_num(keys.key_bx as i64), self.obfuscate_num(val ^ mask, depth - 1, keys), self.obfuscate_num(mask, depth - 1, keys))
         } else {
-            let mask = self.range64(0x10000000, 0x3FFFFFFF);
+            let mask = crate::VM::cf_wrap::big_num(self);
             format!("{}[{}][{}]({},{})", keys.tbl_p, self.format_num(keys.grp1 as i64), self.format_num(keys.key_add as i64), self.obfuscate_num(val.wrapping_sub(mask), depth - 1, keys), self.obfuscate_num(mask, depth - 1, keys))
         }
     }
