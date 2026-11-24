@@ -31,7 +31,7 @@ use crate::VM::Names;
 use crate::VM::VM_Backend::Generator::GenRng;
 use std::collections::{HashMap, HashSet};
 
-mod Lexer;
+pub(crate) mod Lexer;
 pub use Lexer::{Slots, Stats, KIND_NUM, KIND_STR, KIND_SYM, KIND_WORD, Tok};
 use Lexer::{is_keyword, key_lit, lex, need_space, render, stmt_bounds};
 

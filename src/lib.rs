@@ -19,3 +19,6 @@ pub mod VM;
 pub mod compressor;
 pub mod packer;
 pub mod parenwrap;
+
+/// 重复数字字面量提升成局部变量（用户 2026-11-18 的体积优化）
+pub mod seq;

@@ -174,6 +174,15 @@ fn main() {
             // sample2 形态收尾：入口名压成单字母（`:J()` 形态）。
             // 标识符的 1~2 字符化在生成器阶段就已经完成（Names::shrink 紧跟整形），
             // 这里只处理 `}):X()(...)` 的入口名。
+            // 体积优化：同一函数内重复出现的数字字面量抽成局部变量（用户 2026-11-18）。
+            let seq_min = std::env::var("KRYX_SEQ_MIN")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(3);
+            let (final_code, hoisted_numbers) = kryvex_ob::seq::hoist_repeated_numbers(&final_code, seq_min);
+            if std::env::var("KRYX_DEBUG_SEQ").is_ok() {
+                eprintln!("[seq] hoisted numbers = {}", hoisted_numbers);
+            }
             let final_code = kryvex_ob::VM::Names::promote_entry(&final_code);
             let final_code = parenwrap::wrap_misc(&final_code);
 
