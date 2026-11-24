@@ -266,7 +266,53 @@ pub fn hoist_repeated_numbers(src: &str, min_count: usize) -> (String, usize) {
             }
         }
     }
-    func_head.insert(0, 0);
+    // 顶层（chunk）的插入点必须在 `local f = ...` **之后**：
+    // Luau 里 `...` 只在「chunk 主块的第一个语句」处是 vararg，前面插了 local 之后
+    // 就变成 "cannot use '...' outside a vararg function"。而 `local f=...` 常常
+    // 正是产物的第一条语句，所以一律跳到「第一条非 local 语句」之前。
+    {
+        let mut head = 0usize;
+        let mut i = 0usize;
+        while i < n {
+            let t = &toks[i];
+            let is_local = t.kind == KIND_WORD && t.text == "local";
+            if !is_local {
+                break;
+            }
+            // 跳过这条 local 语句：到同层的下一条语句起点
+            let mut j = i + 1;
+            let mut pd = 0i32;
+            while j < n {
+                let u = &toks[j];
+                if u.kind == KIND_SYM {
+                    match u.text.as_str() {
+                        "(" | "[" | "{" => pd += 1,
+                        ")" | "]" | "}" => pd -= 1,
+                        ";" if pd == 0 => {
+                            j += 1;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                let starts_new = (u.kind == KIND_WORD
+                    && matches!(
+                        u.text.as_str(),
+                        "local" | "return" | "if" | "for" | "while" | "repeat" | "function" | "do"
+                    )
+                    && pd == 0
+                    && j > i + 1)
+                    || (u.kind == KIND_NUM && pd == 0 && j > i + 1);
+                if starts_new {
+                    break;
+                }
+                j += 1;
+            }
+            head = j;
+            i = j;
+        }
+        func_head.insert(0, head);
+    }
 
     // 统计 (函数, 值) → 出现次数 / 全部下标
     let mut sites: HashMap<(usize, i128), Vec<usize>> = HashMap::new();

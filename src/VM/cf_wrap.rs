@@ -1081,3 +1081,26 @@ pub fn state_machine(body: &str, rng: &mut GenRng) -> String {
     out.push_str(" until false;");
     out
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 供 packer 直接拼装「第 10 类：缓存槽位」包装用的公开小工具。
+//
+// 这些只是把本文件里已有的 seed / 噪声链 / 数字池暴露出去，
+// 让 packer 可以在自己拼的语句里复用同一套随机源，而不必重写一遍推算逻辑。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 公开版 `seed`：返回 (初始化语句, `_` 的已知终值)。
+pub fn seed_pub(rng: &mut GenRng) -> (String, i64) {
+    seed(rng)
+}
+
+/// 公开版 `noise_chain`：返回 (噪声链文本, 链末的值)。
+/// 链以 `+`/`-` 开头（调用方负责把它接在已有表达式后面）。
+pub fn noise_pub(rng: &mut GenRng, v: i64) -> (String, i64) {
+    noise_chain(rng, v)
+}
+
+/// 公开版 `small`：从复用数字池里取一个小数字。
+pub fn small_pub(rng: &mut GenRng) -> i64 {
+    small(rng)
+}

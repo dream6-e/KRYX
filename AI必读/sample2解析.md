@@ -459,3 +459,81 @@ _=c;_=d;_*=0b10;_=0X0_36;_+=b;_=49;_%=0X0_10;_+=(...);
   `hash.lua`（同样含计时）。
 - 产物由 128,188 B → 122,093 B；IIFE 3~7 条、内建别名 21~25 处、
   形参 ≥2 的函数中重名率 35~40%。
+
+---
+
+## 9. 体积优化：重复数字字面量提升为 local（2026-11-18）
+
+用户要求：「同一作用域里的一个数字如果超过 2 个，就用一个 local 变量储存起来，这样可以节省空间」。
+
+新增模块 `src/seq.rs`，跑在 `RadixSieve` 之后、`promote_entry` 之前（纯文本层，
+不碰 compressor / RadixSieve，因此不影响既有混淆步骤）。
+
+### 9.1 规则
+
+- **作用域单位 = 函数**（最外层 chunk 算一个）；同一个函数内同一个数值的字面量
+  出现 **≥ 3 次**（即「超过 2 个」）才提升；
+- 声明插在该函数体的第一条语句之前；顶层则插在 `local f=...`（chunk vararg）
+  **之后** —— 否则 `...` 会被判成「vararg 函数之外使用 `...`」，这是实测踩到的坑；
+- 名字从「全文都没出现过的 1~2 字符标识符」里挑，因此既不会遮蔽任何变量，
+  也不需要再过一遍重命名；
+- **只有真能省字节才提升**：按 `(次数-1)*(字面量长-名字长) > 8+名字长+字面量长` 判断。
+  这自动跳过了 `1` / `2` 这类 1 字节字面量（换成变量反而更长），
+  只提升 `0B1010_1010`、`49120`、`0x1F4A3C` 这类长字面量；
+- 跳过 `1.5`、`1e10`、`1..2`，以及 `t.5` 这种「数字作索引」的语法糖（换成变量语义会变）；
+- 负号不参与：`-` 是独立 token，`x-16` 只会替换 `16`，得到 `x-名字`，值不变。
+
+### 9.2 实测效果
+
+`examples/print.lua`，同一随机种子档位下 4 次采样：
+
+| | 关闭 seq | 开启 seq |
+|---|---|---|
+| 产物大小 | 123,243 ~ 135,106 B | 94,113 ~ 97,460 B |
+
+约 **-21%**。每次提升 75~120 个数字种类。
+
+验证：`examples/print.lua` 120 次随机生成，关闭 seq 116/120 输出一致，
+开启 seq 115/120 —— 差异在抽样噪声内，失败类型同为既有的
+`attempt to compare nil <= nil` 一类随机不稳定。
+`test/` + `test/Prometheus/` 矩阵三轮：恒定只有既有的 3 个计时类失败
+（`benchmark.lua`、`benchmark (1).lua`、`hash.lua`）。
+
+单测（`cargo test --lib seq`）覆盖：重复数字提升、函数作用域提升、
+`t.5` 索引语法保留、1 字节字面量跳过。
+
+---
+
+## 10. 第 10 类：缓存槽位记忆化
+
+对应 `sample2包装形式.md` 第 10 类。`m_bxor` 原本是两条裸语句：
+`_=s.memo[k];if _ then return _ end;`，改成 sample2 的多层形态：
+
+```lua
+<seed>;_=0xa;_=_+(d-3+b-72);_+=(-b-d+0X0_1-10);_%=0x17;
+exSoeUr=s.TgacWlrmtMjb[k_bxor];if not((exSoeUr)==nil)then return exSoeUr end;
+<seed>;while … do … c_=a_*256+b_ … end;     -- 未命中：真的算
+<seed>;if s.TgacWlrmtMjb[k_bxor]==nil then s.TgacWlrmtMjb[k_bxor]=c_;else s.TgacWlrmtMjb[k_bxor]=(0x6B7-0x6B7)end;do s.TgacWlrmtMjb[0x353C6]=nil;end
+<seed>;if not(not s.TgacWlrmtMjb[0x16625])then t_cache=s.TgacWlrmtMjb[0x16625];else t_cache=c_+25;do s.TgacWlrmtMjb[0x16625]=(t_cache);end;end;
+```
+
+即 sample2 的三种招牌写法都出现了：`if not(not m[K])` 双否定、
+`if not m[K] then … else … (m)[K]=(f)` 二段式回填、`v[K]=nil` 槽位清空。
+
+### 10.1 实现中必须注意的三点
+
+1. **`return` 必须是块的最后一条语句**。所以「命中即返回」必须自成一个
+   `if … then return … end`，后面不能再拼别的语句；不能用 `wrap_stmt`
+   （它可能生成 `if…end` 或状态机，拼在 `return` 后面直接语法错）。
+2. **缓存里存的必须是结果，不是键**。第一版把 `k_bxor` 写进了缓存槽，
+   第二次同键调用直接返回键值 → `char` 收到非法参数。写缓存必须放在
+   `while` 循环结束、`c_` 已经是真正的异或结果之后。
+3. **压缩器会去掉分号**。`X=c_+25;(s.m)[k]=(X)` 会被粘成 `X=c_+25 (s.m)[k]=(X)`
+   → `Expected identifier when parsing expression, got '='`。
+   凡是「赋值后面紧跟以 `(` 开头的语句」都必须用 `do … end` 包住。
+
+### 10.2 验证
+
+`examples/print.lua` 连续 120 次：语法编译（`luau-compile`）全通过，
+输出一致 115 次（基线 116 次，同为既有随机不稳定）。
+矩阵三轮：仅既有的 3 个计时类失败。

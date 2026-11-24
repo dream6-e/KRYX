@@ -563,9 +563,37 @@ impl Packer {
         sb.push_str("    local _;\n");
         sb.push_str(&format!("    local {} = ({{\n", shell_obj));
         // ---------- m_bxor ----------
-        sb.push_str(&format!("        {m_bxor} = function(q, s, a_, b_, ra, rb, p, c_, rra, rrb, k_bxor)\n"));
+        sb.push_str(&format!("        {m_bxor} = function(q, s, a_, b_, ra, rb, p, c_, rra, rrb, k_bxor, t_cache, k_cache)\n"));
         sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("k_bxor = a_ * 256 + b_;", rng)));
-        sb.push_str("            _ = s.memo[k_bxor];\n            if _ then return _ end;\n");
+        // ── 第 10 类：缓存槽位记忆化（sample2 的招牌形态）──
+        // 原来的写法是两条裸语句：`_=s.memo[k];if _ then return _ end;`
+        // 现在整体换成分层形态，既保留 sample2 的观感，又严格合法：
+        //
+        //   1) 命中就提前返回（`return` 必须是块的**最后一条语句**，所以单独包一层）：
+        //        <seed>;if not((memo)[k]==nil) then return (memo)[k] end
+        //   2) 未命中：直接算 `c_ = a_*256+b_`，不走缓存（保证与原实现逐位一致）
+        //   3) 散场前把结果回填进缓存槽，并顺手清掉一处旧槽（sample2 的 `v[k]=nil` 写法）：
+        //        <seed>;if (memo)[k]==nil then (memo)[k]=c_ else (memo)[k]=0x<旧槽> end;
+        //        (memo)[0X<随机>]=nil;
+        {
+            // 命中判断：`not((memo)[k]==nil)` 这种双重否定 + 比较混用
+            // sample2 的招牌写法：先把槽位取到临时变量，再用 `if not(not t)` 判断，
+            // 命中就直接 return（`return` 必须是块尾，所以整句自成一块）。
+            let t_slot = rng.name();
+            sb.push_str(&format!(
+                "            {sd};{t}=s.{memo}[k_bxor];if {g} then return {t} end;\n",
+                sd = cf_wrap::seed_pub(rng).0,
+                t = t_slot,
+                memo = f_memo,
+                g = match rng.range(0, 3) {
+                    0 => format!("not(({t_slot})==nil)"),
+                    1 => format!("not(not {t_slot})"),
+                    _ => format!("{t_slot}~=(nil)"),
+                },
+            ));
+            // 未命中的真实计算 + 回填（回填写在 while 之后，见 m_bxor 结尾）
+            sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("c_ = a_ * 256 + b_;", rng)));
+        }
         sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt("ra, rb, p, c_ = a_, b_, 1, 0;", rng)));
         sb.push_str(&format!("            while {} do\n", cf_wrap::const_true(rng)));
         sb.push_str("                if ra > 0 or rb > 0 then\n");
@@ -575,6 +603,32 @@ impl Packer {
         sb.push_str("                    end\n");
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("ra, rb, p = s.floor((ra - rra) / 2), s.floor((rb - rrb) / 2), p * 2;", rng)));
         sb.push_str("                else break end;\n            end;\n");
+        // 缓存槽回填：`c_` 此刻才是真正的异或结果（循环里累积的那个），
+        // 写错位置（写成键 k_bxor）会让第二次同键调用直接返回错误值。
+        sb.push_str(&format!(
+            "            {sd};if s.{memo}[k_bxor]==nil then s.{memo}[k_bxor]=c_;else s.{memo}[k_bxor]=(0x{os:X}-0x{os:X}) end;do s.{memo}[0x{ns:X}]=nil;end\n",
+            sd = cf_wrap::seed_pub(rng).0,
+            memo = f_memo,
+            os = rng.range(0x100, 0x7000),
+            ns = rng.range(0x10000, 0x6FFFF),
+        ));
+        // 第二个缓存槽：写一个「键→结果」之外的派生量（`c_ + 常量`），
+        // 用 sample2 那种 `if not(not m[k]) then … else … end` 的二段式，
+        // 但它是纯装饰：只在从未写过的槽位上写一次，之后不再读。
+        {
+            let slot2 = rng.range(0x10000, 0x6FFFF);
+            let bump = rng.range(1, 0x40);
+            sb.push_str(&format!(
+                // 注意：压缩器会去掉分号，`X=c_+25;(s.m)[k]=(X)` 会粘成
+                // `X=c_+25 (s.m)[k]=(X)` 而报语法错。所以赋值一律包进 `do … end`。
+                "            {sd};if not(not s.{memo}[0x{s2:X}]) then {tc}=s.{memo}[0x{s2:X}];else {tc}=c_+{bp};do s.{memo}[0x{s2:X}]=({tc});end;end;\n",
+                sd = cf_wrap::seed_pub(rng).0,
+                memo = f_memo,
+                s2 = slot2,
+                tc = "t_cache",
+                bp = bump,
+            ));
+        }
         sb.push_str("            local function hg(dr, ...) repeat return c_ or nil until dr end;local df=hg(true)\n");
         sb.push_str("            return df;\n        end,\n");
         // ---------- m_next ----------
