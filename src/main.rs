@@ -179,6 +179,17 @@ fn main() {
                 .ok()
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(3);
+            // 体积优化：同一作用域里反复出现的 `nil` / `getgenv` 抽成局部变量（用户 2026-11-18）。
+            // 必须在 hoist_repeated_numbers 之前：常量先落地，数字再去复用。
+            let const_min = std::env::var("KRYX_CONST_MIN")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(3);
+            let (final_code, hoisted_consts) =
+                kryvex_ob::hoist::hoist_constants(&final_code, const_min);
+            if std::env::var("KRYX_DEBUG_SEQ").is_ok() {
+                eprintln!("[hoist] constants = {}", hoisted_consts);
+            }
             let (final_code, hoisted_numbers) = kryvex_ob::seq::hoist_repeated_numbers(&final_code, seq_min);
             if std::env::var("KRYX_DEBUG_SEQ").is_ok() {
                 eprintln!("[seq] hoisted numbers = {}", hoisted_numbers);

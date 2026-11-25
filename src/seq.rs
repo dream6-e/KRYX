@@ -101,7 +101,7 @@ fn owned_do_set(toks: &[Tok]) -> HashSet<usize> {
 ///
 /// 顶层 chunk 记 0，**不参与提升** —— 用户 2026-11-18：
 /// 「不要把数字放在开头的 return 壳外，在哪个作用域复用就放在哪个作用域」。
-fn block_scopes(toks: &[Tok]) -> (Vec<usize>, HashMap<usize, usize>, HashMap<usize, usize>, Vec<usize>) {
+pub(crate) fn block_scopes(toks: &[Tok]) -> (Vec<usize>, HashMap<usize, usize>, HashMap<usize, usize>, Vec<usize>) {
     const TOP: usize = 0;
     let n = toks.len();
     let owned = owned_do_set(toks);
@@ -227,7 +227,7 @@ fn block_scopes(toks: &[Tok]) -> (Vec<usize>, HashMap<usize, usize>, HashMap<usi
 }
 
 /// `a` 是否是 `b` 的祖先（含自身）。
-fn is_ancestor(parent: &HashMap<usize, usize>, a: usize, b: usize) -> bool {
+pub(crate) fn is_ancestor(parent: &HashMap<usize, usize>, a: usize, b: usize) -> bool {
     let mut cur = b;
     loop {
         if cur == a {
@@ -242,7 +242,7 @@ fn is_ancestor(parent: &HashMap<usize, usize>, a: usize, b: usize) -> bool {
 
 /// 块类型
 #[derive(Clone, Copy, PartialEq)]
-enum Kind {
+pub(crate) enum Kind {
     Func,
     Then,
     Else,
@@ -254,7 +254,7 @@ enum Kind {
 
 /// 函数体的插入点：参数表 `)` 之后的第一个 token。
 /// 返回 None 表示函数体为空（`function()end`）或定位失败。
-fn body_head(toks: &[Tok], func_tok: usize) -> Option<usize> {
+pub(crate) fn body_head(toks: &[Tok], func_tok: usize) -> Option<usize> {
     let n = toks.len();
     let mut i = func_tok + 1;
     // 跳过 `name` / `:` / `.` 链，找到参数表的 `(`
@@ -294,7 +294,7 @@ fn body_head(toks: &[Tok], func_tok: usize) -> Option<usize> {
 }
 
 /// 挑一个全文都没出现过的 1~2 字符标识符。
-fn fresh_short_name(used: &HashSet<String>, taken: &mut HashSet<String>, pref_len: usize) -> Option<String> {
+pub(crate) fn fresh_short_name(used: &HashSet<String>, taken: &mut HashSet<String>, pref_len: usize) -> Option<String> {
     const KEYWORDS: [&str; 22] = [
         "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local",
         "nil", "not", "or", "repeat", "return", "then", "true", "until", "while", "goto",
