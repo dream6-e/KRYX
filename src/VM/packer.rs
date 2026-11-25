@@ -310,7 +310,15 @@ impl Packer {
         let f_concat = rng.name();
         let f_remove = rng.name();
         let f_reverse = rng.name();
-        let sb_chunk = rng.name();
+        // ┌──────────────────────────────────────────────────────────────┐
+        // │  KRYX 水印常量 —— 固定值，不要改动！                          │
+        // │  这是 `load(sb_code, "<chunkname>")` 的 chunkname 参数，       │
+        // │  故意固定成 "KRYX" 作为产物水印（用户 2026-11-18 要求）。      │
+        // │  它只出现在运行期报错栈里，不参与任何解密/校验；              │
+        // │  改成别的值（或改回 rng.name()）会丢掉水印、并改变产物字节。   │
+        // └──────────────────────────────────────────────────────────────┘
+        // 不要改动！
+        let sb_chunk = "KRYX";
 
         // ===== 第 3/5 类包装：内建别名 + 样板填充函数（对齐 sample2 的壳外观）=====
         // 字段名用 rng.name() 生成，收尾时随其它壳字段一起压成 1~2 字符短名。
@@ -711,6 +719,7 @@ impl Packer {
         sb.push_str("                local sb_code = false;\n");
         sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt("sb_code = get_sb_code and get_sb_code() or \"\";", rng)));
         sb.push_str("                local env_maker_chunk = false;\n");
+        // KRYX 水印：这里的 chunkname 固定为 "KRYX"，不要改动！
         sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt(&format!("env_maker_chunk = load_func(sb_code, \"{sb_chunk}\");"), rng)));
         sb.push_str("                local stage2 = function()\n");
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.data = parts[2];", rng)));
