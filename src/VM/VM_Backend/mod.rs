@@ -4,4 +4,5 @@ pub mod Generator;
 pub mod Lua_core;
 pub mod Serializer;
 pub mod AntiTamper;
+pub mod kx1;
 pub mod Sandbox;

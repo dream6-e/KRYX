@@ -130,6 +130,12 @@ fn is_reserved_member(name: &str) -> bool {
             | "replace"
             | "lshift"
             | "rshift"
+            // bit32 的轮转/位计数/字节序（KX1 加密库依赖，>4 字符必须放行）
+            | "lrotate"
+            | "rrotate"
+            | "countlz"
+            | "countrz"
+            | "byteswap"
             | "classname"
             | "name"
             | "parent"

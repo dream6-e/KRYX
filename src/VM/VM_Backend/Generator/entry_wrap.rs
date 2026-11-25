@@ -196,3 +196,32 @@ impl StateMachine {
         )
     }
 }
+
+/// 一次性渲染整段入口包裹（含转义字面量与种子）。
+///
+/// `shell_keys` = `[pcall, type, match, tostring, error]`
+/// `names`      = `[wrap_fn, exec, benv, l, ok, msg, pos, hold]`
+///
+/// 抽到本模块是为了让 `impl_generator.rs` 保持在 45 KB 以内。
+pub fn render_entry(
+    rng: &mut super::GenRng,
+    var_shell: &str,
+    shell_keys: [&str; 5],
+    names: [&str; 8],
+) -> String {
+    let mut esc_variants: Vec<u8> = (0..64).map(|_| rng.range(0, 5) as u8).collect();
+    let mut esc_z: Vec<bool> = (0..64).map(|_| rng.range(0, 4) == 0).collect();
+    let mut vi = 0usize;
+    let mut zi = 0usize;
+    let (lit_tag, lit_inner, lit_ty, lit_colon, lit_pat) = escaped_parts(
+        &mut || { let v = esc_variants[vi % esc_variants.len()]; vi += 1; v },
+        &mut || { let z = esc_z[zi % esc_z.len()]; zi += 1; z },
+    );
+    let k = |i: usize| format!("{}.{}", var_shell, shell_keys[i]);
+    wrap_entry(
+        names[0], names[4], names[5], names[6], names[7], "_",
+        &k(0), names[1], names[2], names[3],
+        &k(1), &k(2), &k(3), &k(4),
+        &lit_tag, &lit_inner, &lit_ty, &lit_colon, &lit_pat,
+    )
+}

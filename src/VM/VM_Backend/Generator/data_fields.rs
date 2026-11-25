@@ -52,8 +52,8 @@ pub fn interleave(
 
 /// 项目的全部数据字段（值表达式沿用原样，保证环境兼容语义不变）。
 /// 传入 15 个已随机化的字段名，顺序与下方的值一一对应。
-pub fn all_fields(k: [&String; 15]) -> Vec<DataField> {
-    const VALUES: [&str; 15] = [
+pub fn all_fields(k: [&String; 20]) -> Vec<DataField> {
+    const VALUES: [&str; 20] = [
         "select",
         "math.floor",
         "math.random",
@@ -69,6 +69,12 @@ pub fn all_fields(k: [&String; 15]) -> Vec<DataField> {
         "string.match",
         "tostring",
         "error",
+        // KX1 反调试池解密所需（bit32 缺失时回退等价实现）
+        "bit32 and bit32.countlz or function(a_) a_=a_%4294967296;local n=0;while a_>0 and a_<2147483648 do a_=a_*2;n=n+1 end;return n end",
+        "bit32 and bit32.countrz or function(a_) a_=a_%4294967296;local n=0;while n<32 and a_%2==0 do a_=a_/2;n=n+1 end;return n end",
+        "bit32 and bit32.byteswap or function(a_) a_=a_%4294967296;local b1=a_%256;local b2=(a_%65536-b1)/256;local b3=(a_%16777216-a_%65536)/65536;local b4=(a_-a_%16777216)/16777216;return b1*16777216+b2*65536+b3*256+b4 end",
+        "bit32 and bit32.lrotate or function(a_,n) a_=a_%4294967296;n=n%32;return (a_*(2^n))%4294967296+ (a_-a_%1)/(2^(32-n)) - (a_-a_%1)/(2^(32-n))%1 end",
+        "bit32 and bit32.rrotate or function(a_,n) a_=a_%4294967296;n=n%32;return (a_-a_%1)/(2^n) + (a_%1) end",
     ];
     k.iter()
         .zip(VALUES.iter())
@@ -91,10 +97,35 @@ pub fn bit32_shims(bx: &str, band: &str, bor: &str, lshift: &str, rshift: &str, 
 
 /// 一步到位：构造字段表 → 打散 → 按随机间隔穿插出表字面量片段。
 pub fn interleaved_fields(
-    names: &[&String; 15],
+    names: &[&String; 20],
     pad_names: &[String],
     range: impl FnMut(usize, usize) -> usize,
 ) -> String {
     let mut fields = all_fields(*names);
     interleave(&mut fields, pad_names, range)
+}
+
+/// KX1 反调试池解密额外需要的 5 个 bit32 字段名。
+/// 放在本模块是为了让 `impl_generator.rs` 保持在 45 KB 以内。
+pub struct Kx1Fields {
+    pub cntlz: String,
+    pub cntrz: String,
+    pub swap: String,
+    pub lrot: String,
+    pub rrot: String,
+}
+
+impl Kx1Fields {
+    pub fn new(rng: &mut super::GenRng) -> Self {
+        Self {
+            cntlz: rng.name(),
+            cntrz: rng.name(),
+            swap: rng.name(),
+            lrot: rng.name(),
+            rrot: rng.name(),
+        }
+    }
+    pub fn names(&self) -> [&str; 5] {
+        [&self.cntlz, &self.cntrz, &self.swap, &self.lrot, &self.rrot]
+    }
 }

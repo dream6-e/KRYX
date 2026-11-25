@@ -12,7 +12,6 @@ impl Generator {
         let var_l = rng.name();
         
         let key_seed_var = rng.name();
-        let at = AntiTamper::generate_split(true, &key_seed_var);
         
         let mut used_ops = HashSet::new();
         { let mut scan_reader = PayloadReader { data: payload, pos: 0 }; scan_used_opcodes(&mut scan_reader, &mut used_ops); }
@@ -145,6 +144,14 @@ impl Generator {
         let k_match = rng.name();
         let k_tostring = rng.name();
         let k_error = rng.name();
+
+        let kx = super::data_fields::Kx1Fields::new(&mut rng);
+        let at = AntiTamper::generate_split_kx1(
+            true, &key_seed_var, &var_shell,
+            &[&k_floor, &k_char, &k_concat, &k_pcall,
+              &k_bx, &k_band, &k_bor, &k_lshift, &k_rshift, &k_bnot],
+            &kx.names(),
+        );
 
         let chacha_key: [u32; 8] = std::array::from_fn(|_| rng.next());
         let chacha_salt: u32 = rng.next();
@@ -617,25 +624,10 @@ impl Generator {
         let v_err_ok = rng.name();
         let v_run = rng.name();
         let v_hold = rng.name();
-        // 报错文本按 sample2 的「多转义混用」形态渲染：
-        // 十进制 / 十六进制 / 八进制 / \u{..} 定点 / \z 吞空白 随机交替。
-        let mut esc_variants: Vec<u8> = (0..64).map(|_| rng.range(0, 5) as u8).collect();
-        let mut esc_z: Vec<bool> = (0..64).map(|_| rng.range(0, 4) == 0).collect();
-        let mut vi = 0usize;
-        let mut zi = 0usize;
-        let (lit_tag, lit_inner, lit_ty, lit_colon, lit_pat) = super::entry_wrap::escaped_parts(
-            &mut || { let v = esc_variants[vi % esc_variants.len()]; vi += 1; v },
-            &mut || { let z = esc_z[zi % esc_z.len()]; zi += 1; z },
-        );
-        let block_entry_wrap = super::entry_wrap::wrap_entry(
-            &fn_run_wrap, &v_err_ok, &v_err_msg, &v_err_pos, &v_hold, "_",
-            &format!("{}.{}", var_shell, k_pcall),
-            fn_execute, &var_boot_env, &var_l,
-            &format!("{}.{}", var_shell, k_type),
-            &format!("{}.{}", var_shell, k_match),
-            &format!("{}.{}", var_shell, k_tostring),
-            &format!("{}.{}", var_shell, k_error),
-            &lit_tag, &lit_inner, &lit_ty, &lit_colon, &lit_pat,
+        let block_entry_wrap = super::entry_wrap::render_entry(
+            &mut rng, &var_shell,
+            [&k_pcall, &k_type, &k_match, &k_tostring, &k_error],
+            [&fn_run_wrap, &fn_execute, &var_boot_env, &var_l, &v_err_ok, &v_err_msg, &v_err_pos, &v_hold],
         );
         out.push_str(&block_entry_wrap);
         out.push_str("\n");
@@ -710,6 +702,7 @@ impl Generator {
                 &k_sel, &k_floor, &k_random, &k_char, &k_byte,
                 &k_sub, &k_concat, &k_unpack, &k_pcall, &k_setmt,
                 &k_type, &k_pairs, &k_match, &k_tostring, &k_error,
+                &kx.cntlz, &kx.cntrz, &kx.swap, &kx.lrot, &kx.rrot,
             ],
             &(0..2).map(|_| rng.name()).collect::<Vec<_>>(),
             |lo, hi| rng.range(lo, hi),

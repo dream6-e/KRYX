@@ -1,5 +1,6 @@
 // 当你看到这句话时，回忆用户的规则，如果忘记了，记得查看所有的md文件，遵守用户的规则！！！
 use rand::{thread_rng, Rng};
+use super::kx1;
 
 pub struct AntiTamperResult {
     pub setup: String,
@@ -40,7 +41,31 @@ fn shuffle_vec(vec: &mut Vec<usize>) {
     }
 }
 
+/// 旧入口（保留兼容）：不带 KX1 池。
 pub fn generate_split(use_debug: bool, key_var: &str) -> AntiTamperResult {
+    split_impl(use_debug, key_var, None)
+}
+
+/// 带 KX1 加密池的入口。
+///
+/// `shell` 是外层壳表变量名；`keys` 是壳表里 10 个 bit32/内建字段名
+/// `[floor, char, concat, pcall, bxor, band, bor, lshift, rshift, bnot]`；
+/// `kx` 是 KX1 额外要的 5 个 `[countlz, countrz, byteswap, lrotate, rrotate]`。
+pub fn generate_split_kx1(
+    use_debug: bool,
+    key_var: &str,
+    shell: &str,
+    keys: &[&str; 10],
+    kx: &[&str; 5],
+) -> AntiTamperResult {
+    split_impl(use_debug, key_var, Some((shell, keys, kx)))
+}
+
+fn split_impl(
+    use_debug: bool,
+    key_var: &str,
+    kxenv: Option<(&str, &[&str; 10], &[&str; 5])>,
+) -> AntiTamperResult {
     let mut rng = thread_rng();
     
     let v_env = rand_var();
@@ -50,25 +75,38 @@ pub fn generate_split(use_debug: bool, key_var: &str) -> AntiTamperResult {
     let v_res = rand_var();
     let v_pool = rand_var();
 
-    let key: u8 = rng.gen_range(10..240);
-
-    // 将所有敏感 API 存入基于哈希的加密池
+    // 将所有敏感 API 存入 KX1 加密池。
+    // 旧版是「(b + key) % 256」的单字节加法 —— 暴力 256 次就能还原。
+    // 现在改为 KX1 流密码（见 cipher/kx1.lua 与 VM_Backend/kx1.rs）。
     let strings = vec![
         "debug", "pcall", "sethook", "gethook", "getinfo", "C", "string", "dump", "error", "info", "math"
     ];
+    let add_key: u8 = rng.gen_range(10..240);
+    let kx_key = kx1::random_key(&mut rng);
+    let kx_nonce: u32 = rng.random();
     let mut pool_entries = Vec::new();
     for s in &strings {
         let hash = poly_hash(s);
-        let enc: Vec<String> = s.bytes().map(|b| ((b as u16 + key as u16) % 256).to_string()).collect();
-        pool_entries.push(format!("[{}]={{{}}}", hash, enc.join(",")));
+        let enc = if kxenv.is_some() {
+            kx1::encrypt(s.as_bytes(), &kx_key, kx_nonce)
+        } else {
+            s.bytes().map(|b| b.wrapping_add(add_key)).collect()
+        };
+        let lit: Vec<String> = enc.iter().map(|b| b.to_string()).collect();
+        pool_entries.push(format!("[{}]={{{}}}", hash, lit.join(",")));
     }
-    
+
     // 生成一个随机变量名用于毒药表（Poison Pill）注入
     let rand_str = random_string();
     let rand_hash = poly_hash(&rand_str);
-    let enc: Vec<String> = rand_str.bytes().map(|b| ((b as u16 + key as u16) % 256).to_string()).collect();
-    pool_entries.push(format!("[{}]={{{}}}", rand_hash, enc.join(",")));
-    
+    let enc = if kxenv.is_some() {
+        kx1::encrypt(rand_str.as_bytes(), &kx_key, kx_nonce)
+    } else {
+        rand_str.bytes().map(|b| b.wrapping_add(add_key)).collect()
+    };
+    let lit: Vec<String> = enc.iter().map(|b| b.to_string()).collect();
+    pool_entries.push(format!("[{}]={{{}}}", rand_hash, lit.join(",")));
+
     let pool_data = pool_entries.join(",");
 
     let mut setup = String::new();
@@ -86,21 +124,57 @@ pub fn generate_split(use_debug: bool, key_var: &str) -> AntiTamperResult {
     v_crash
 ));
     setup.push_str(&format!("local {} = {{{}}};\n", v_pool, pool_data));
+    // 解密器。
+    //
+    // 关键约束：`at.setup` 插在**壳表构造之前**。壳表是外层
+    // `({...}):J()(...)` 的实参，此刻仍是 nil，所以这里绝不能引用
+    // 壳表字段，只能用 bit32 / math / string 的全局直取。
+    let v_kxdec = rand_var();
+    let v_kxmul = rand_var();
+    let _ = kxenv;
+    if kxenv.is_some() {
+        let kw = kx1::keywords(&kx_key);
+        let key_lit = kw.iter().map(|v| format!("0x{:X}", v)).collect::<Vec<_>>().join(",");
+        setup.push_str(&format!(
+            "local {m} = function(a,b) a=a%4294967296;b=b%4294967296;\
+             local a0=a%65536;local a1=(a-a0)/65536;\
+             local b0=b%65536;local b1=(b-b0)/65536;\
+             return (a0*b0+((a0*b1+a1*b0)%65536)*65536)%4294967296 end; local _ = {m};\n",
+            m = v_kxmul
+        ));
+        setup.push_str(&kx1::lua_decrypt_lib(
+            &v_pool, &key_lit, &kx_nonce.to_string(),
+            &v_kxmul,
+            "bit32.lshift", "bit32.rshift", "bit32.rrotate", "bit32.lrotate",
+            "bit32.countlz", "bit32.countrz", "bit32.byteswap",
+            "bit32.band", "bit32.bxor", "bit32.bor", "bit32.bnot",
+            "math.floor", "string.sub", "string.char", "table.concat",
+            &v_kxdec,
+        ));
+    } else {
+        setup.push_str(&format!(
+            "local function {}(e) local s='';for i=1,#e do s=s..string.char((e[i]+256-{})%256) end;\
+             return s end;\n", v_kxdec, add_key
+        ));
+    }
+
+    // 解密入口。写成 `local f = function(...)` 而不是 `local function f`，
+    // 副作用上等价，但末尾的裸引用会命中 Reshape 的 bare_ref_global，
+    // 从而不被提升成 `X:d(u,h)` —— 方法化会多插一个 u 实参，运行时立刻 nil。
     setup.push_str(&format!(
-        "local function {}(h) \
-             local la,lk=false,string_char;local e = {}[h]; if not e then return la or nil end; \
-             local sr=la or lk;local s = ''; \
-             for i=1, #e do s = s .. sr((e[i] + 256 - {}) % 256) end; \
-             return not la and s; \
-         end;\n",
-         v_dec, v_pool, key
+        "local function {}(h) local e = {}[h]; if not e then return nil end; \
+         return {}(e) end; local _ = {};\n",
+         v_dec, v_pool, v_kxdec, v_dec
     ));
+    // 末尾那句裸引用（不是调用位置）会让 Reshape::bare_ref_global 命中，
+    // 从而跳过「把 depth-0 局部函数提升成 v:key(u,...)」——方法化会凭空
+    // 多插一个 u 实参，把 h 顶到第二位，运行时立刻 nil。
     setup.push_str(&format!(
         "local function {}(h) \
             local xc,yu=true;local s = {}(h); if not s then return yu end; \
              return xc and {}[s]; \
-         end;\n",
-         v_res, v_dec, v_env
+         end; local _ = {};\n",
+         v_res, v_dec, v_env, v_dec
     ));
     setup.push_str(&format!("local {}={{}};\n", v_net));
 
