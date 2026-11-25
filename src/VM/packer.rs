@@ -245,10 +245,9 @@ impl Packer {
     }
 
     /// sample2 风格的自研混合进制编码（Ascii85 形态）：
-    /// 每 4 字节 -> 5 个字符，字符 = 0x21 + 数字（'!'..'u'，跳过容器不允许的字符并不可能，
-    /// 因为 0x21..0x75 全部可直接置于长括号内；长括号 padding 由 pack() 自适应选择）。
-    /// 解码侧直接 byte - 0x21 做混合进制还原：v = b1 + b2*85 + b3*85^2 + b4*85^3 + b5*85^4，
-    /// 输出小端字节序。余数：3 字节 -> 4 字符、2 字节 -> 3 字符、1 字节 -> 2 字符。
+    /// 每 4 字节 -> 5 个字符，字符 = 0x21 + 数字（'!'..'u'）。
+    /// 解码侧直接 byte - 0x21 做混合进制还原。余数：3 字节 -> 4 字符、2 字节 -> 3 字符、1 字节 -> 2 字符。
+    /// magic 前缀由 impl_generator 的长括号头部 `KRYVEX` 承担（与 sample2 的 "LPH@" 同位）。
     fn base85_encode_mixed(input: &[u8]) -> String {
         let mut encoded = String::with_capacity(input.len() / 4 * 5 + 8);
         let mut i = 0;
@@ -257,7 +256,6 @@ impl Packer {
                 | ((input[i + 1] as u32) << 16)
                 | ((input[i + 2] as u32) << 8)
                 | (input[i + 3] as u32);
-            // 小端数字序（低权重先行）：c1=v%85, c2=(v/85)%85, ..., c5=v/85^4
             let mut rem = v;
             for _ in 0..5 {
                 encoded.push((0x21 + (rem % 85) as u8) as char);

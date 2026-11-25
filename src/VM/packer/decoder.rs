@@ -36,6 +36,12 @@ impl Packer {
         let k_rev = rng.name();
         let k_lf = rng.name();
         let k_gm = rng.name();
+        // sample2 §2.2：解码结果是 buffer 而不是 string（buffer.create / writeu32）。
+        // 环境没有 buffer 时（lua5.1）退化成 string 通道，保持既有行为。
+        let k_buf = rng.name();
+        let k_cre = rng.name();
+        let k_wu = rng.name();
+        let k_rd = rng.name();
 
         // 内部状态表字段名：全部随机化。
         // compressor 的重命名门禁（len>4 且非保留成员）会跳过 len<=4 的短字段名
@@ -486,6 +492,8 @@ impl Packer {
         sb.push_str("                local stage2 = function()\n");
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.data = parts[2];", rng)));
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.len = #s.data;", rng)));
+        // 注意：载荷头部的 `KRYVEX` magic 前缀由 impl_generator 的 block_dec_header
+        // 用 `string.sub(..., 7)` 跳过（与 sample2 跳 "LPH@" 同位），这里保持从 1 开始。
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.idx = 1; s.kidx = 0;", rng)));
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.buf = {}; s.res = {};", rng)));
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt(&format!("s.pc = {pc_state0}; s.bc = 0; s.f = 0; s.p1 = 0; s.p2 = 0; s.w = 0; s.u = 0; s.ptr = 0;"), rng)));
@@ -509,6 +517,9 @@ impl Packer {
             sb.push('\n');
         }
         sb.push_str(&format!("    , {k_un} = unpack or table.unpack, {k_ch} = string.char, {k_by} = string.byte, {k_fl} = math.floor, {k_ins} = table.insert, {k_cat} = table.concat, {k_rem} = table.remove, {k_rev} = string.reverse, {k_lf} = loadstring or load, {k_gm} = string.gmatch\n    }});\n"));
+        // sample2 §2.2：常量池解码结果是 buffer（`buffer.create` / `writeu32` / `readu8`）。
+        // 环境无 buffer（lua5.1）时这三个别名是 false，解码走 string 通道。
+        sb.push_str(&format!("    {k_shell}.{k_buf}, {k_shell}.{k_cre}, {k_shell}.{k_wu}, {k_shell}.{k_rd} = (buffer or false), (buffer and buffer.create or false), (buffer and buffer.writeu32 or false), (buffer and buffer.readu8 or false);\n", k_shell = shell_obj));
         // 第 6 类：IIFE（sample2 有 8 处 `(function(`，多为「只取出函数值存槽位」）。
         // 放在壳表建好之后、`m_main` 调用之前；每条用 `do ... end;` 包住，
         // 避免压缩器去分号后两个 IIFE 粘成链式调用 `f()(g)`。
