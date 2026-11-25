@@ -42,6 +42,13 @@ impl Packer {
         let k_cre = rng.name();
         let k_wu = rng.name();
         let k_rd = rng.name();
+        let k_ws = rng.name();
+        let k_wb = rng.name();
+        let k_rs = rng.name();
+        let helper_push = rng.name();
+        let helper_size = rng.name();
+        let helper_copy = rng.name();
+        let helper_snap = rng.name();
 
         // 内部状态表字段名：全部随机化。
         // compressor 的重命名门禁（len>4 且非保留成员）会跳过 len<=4 的短字段名
@@ -171,7 +178,9 @@ impl Packer {
             op_state0, tamper_val,
             cf_wrap::wrap_all(&[
                 "s.bc = 8;".into(),
-                "s.res = {};".into(),
+                // sample2 §2.2：解码输出落到 buffer。环境有 buffer 时开一块足够大的
+                // 缓冲区 + 写游标；没有 buffer（lua5.1）退回字符串表通道 s.res。
+                "if s.wbuf then s.rbuf = s.create(65536); s.rpos = 0; else s.res = {}; end;".into(),
                 format!("s.pc = {};", pc_state1),
             ], rng)
         ));
@@ -187,7 +196,7 @@ impl Packer {
             cf_wrap::wrap_all(&[format!("s.f = q:{}(s);", m_next)], rng),
             cf_wrap::wrap_all(&[
                 "s.r_flg = true;".into(),
-                "s.r_vals = {s.concat(s.res)};".into(),
+                "s.r_vals = {s.snap(s)};".into(),
                 "s.r_len = 1;".into(),
             ], rng),
             cf_wrap::wrap_all(&["s.bc = 0;".into()], rng),
@@ -205,10 +214,10 @@ impl Packer {
             cf_wrap::wrap_all(&[format!("s.u = q:{}(s);", m_next)], rng),
             cf_wrap::wrap_all(&[
                 "s.r_flg = true;".into(),
-                "s.r_vals = {s.concat(s.res)};".into(),
+                "s.r_vals = {s.snap(s)};".into(),
                 "s.r_len = 1;".into(),
             ], rng),
-            cf_wrap::wrap_all(&["s.res[#s.res+1] = s.char(s.u);".into()], rng),
+            cf_wrap::wrap_all(&["s.push(s, s.u);".into()], rng),
             cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state9)], rng)
         ));
         handlers_init.push(format!(
@@ -217,7 +226,7 @@ impl Packer {
             cf_wrap::wrap_all(&[format!("s.p1 = q:{}(s);", m_next)], rng),
             cf_wrap::wrap_all(&[
                 "s.r_flg = true;".into(),
-                "s.r_vals = {s.concat(s.res)};".into(),
+                "s.r_vals = {s.snap(s)};".into(),
                 "s.r_len = 1;".into(),
             ], rng),
             cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state6)], rng)
@@ -228,7 +237,7 @@ impl Packer {
             cf_wrap::wrap_all(&[format!("s.p2 = q:{}(s);", m_next)], rng),
             cf_wrap::wrap_all(&[
                 "s.r_flg = true;".into(),
-                "s.r_vals = {s.concat(s.res)};".into(),
+                "s.r_vals = {s.snap(s)};".into(),
                 "s.r_len = 1;".into(),
             ], rng),
             cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state7)], rng)
@@ -239,7 +248,7 @@ impl Packer {
             cf_wrap::wrap_all(&[format!("s.w = q:{}(s);", m_next)], rng),
             cf_wrap::wrap_all(&[
                 "s.r_flg = true;".into(),
-                "s.r_vals = {s.concat(s.res)};".into(),
+                "s.r_vals = {s.snap(s)};".into(),
                 "s.r_len = 1;".into(),
             ], rng),
             cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state8)], rng)
@@ -247,10 +256,10 @@ impl Packer {
         handlers_init.push(format!(
             "s.handlers[{}+{}] = function(inst, iter) {} {} while {} do if iter >= s.w + 3 then break end; {} {} end; {} end;",
             op_state8, tamper_val,
-            cf_wrap::wrap_all(&["s.ptr = #s.res - (s.p1 * 256 + s.p2) + 1;".into()], rng),
+            cf_wrap::wrap_all(&["s.ptr = s.size(s) - (s.p1 * 256 + s.p2);".into()], rng),
             cf_wrap::wrap_all(&["iter = 0;".into()], rng),
             cf_wrap::const_true(rng),
-            cf_wrap::wrap_all(&["s.res[#s.res+1] = s.res[s.ptr + iter];".into()], rng),
+            cf_wrap::wrap_all(&["s.copy(s, s.ptr + iter);".into()], rng),
             cf_wrap::wrap_all(&["iter = iter + 1;".into()], rng),
             cf_wrap::wrap_all(&[format!("s.pc = {};", pc_state9)], rng)
         ));
@@ -446,6 +455,14 @@ impl Packer {
         sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt("s.idx = i;", rng)));
         sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt(&format!("return q:{m_next}(s);"), rng)));
         sb.push_str("        end,\n");
+        // ---------- buffer 通道辅助（sample2 §2.2：解码结果落 buffer）----------
+        // 环境有 buffer 时全部走 buffer；否则这 5 个方法等价于原来的
+        // `s.res[#s.res+1]=...` / `table.concat(s.res)` / `#s.res`，行为完全一致。
+        sb.push_str(&format!("        {} = function(s, _v) if s.rbuf then s.wb(s.rbuf, s.rpos, _v % 256); s.rpos = s.rpos + 1; else s.res[#s.res+1] = s.char(_v); end; end,\n", helper_push));
+        sb.push_str(&format!("        {} = function(s) if s.rbuf then return s.rpos; else return #s.res; end; end,\n", helper_size));
+        sb.push_str(&format!("        {} = function(s, _p) if s.rbuf then s.push(s, s.rb(s.rbuf, _p)); else s.res[#s.res+1] = s.res[_p + 1]; end; end,\n", helper_copy));
+        sb.push_str(&format!("        {} = function(s) if s.rbuf then return s.rs(s.rbuf, 0, s.rpos); else return s.concat(s.res); end; end,\n", helper_snap));
+
         // ---------- m_init_map ----------
         sb.push_str(&format!("        {m_init_map} = function(q, s, parts, i, kparts, kstr)\n"));
         sb.push_str(&format!("            {}\n", cf_wrap::wrap_stmt(&format!("kparts = {{{combined_key_expr}}};"), rng)));
@@ -470,6 +487,10 @@ impl Packer {
         // ---------- m_main ----------
         sb.push_str(&format!("        {m_main} = function(q, data)\n"));
         sb.push_str(&format!("            local insert, load_func, gmatch = q.{k_ins}, q.{k_lf}, q.{k_gm};\n"));
+        // sample2 §2.2：把 buffer 通道从壳对象 q 注入 s（q 在这里就是壳表本身）。
+        sb.push_str(&format!("            local b_cre, b_wb, b_rb, b_rs = q.{k_cre}, q.{k_wb}, q.{k_rd}, q.{k_rs};\n"));
+        sb.push_str(&format!("            local h_push, h_size, h_copy, h_snap = q.{hp}, q.{hs}, q.{hc}, q.{hn};\n",
+            hp = helper_push, hs = helper_size, hc = helper_copy, hn = helper_snap));
         sb.push_str("            return (function(s)\n");
         sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt(&format!("q:{m_init_map}(s);"), rng)));
         sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt(&format!("q:{m_init_insts}(s);"), rng)));
@@ -495,7 +516,7 @@ impl Packer {
         // 注意：载荷头部的 `KRYVEX` magic 前缀由 impl_generator 的 block_dec_header
         // 用 `string.sub(..., 7)` 跳过（与 sample2 跳 "LPH@" 同位），这里保持从 1 开始。
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.idx = 1; s.kidx = 0;", rng)));
-        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.buf = {}; s.res = {};", rng)));
+        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.buf = {}; s.res = {}; s.rbuf = nil; s.rpos = 0;", rng)));
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt(&format!("s.pc = {pc_state0}; s.bc = 0; s.f = 0; s.p1 = 0; s.p2 = 0; s.w = 0; s.u = 0; s.ptr = 0;"), rng)));
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.r_flg = false; s.r_vals = {}; s.r_len = 0; s.tail_flg = false;", rng)));
         sb.push_str(&format!("                    return q:{m_run}(s);\n"));
@@ -507,6 +528,9 @@ impl Packer {
         sb.push_str("                r_flg = false, r_vals = {}, r_len = 0, tail_flg = false,\n");
         sb.push_str("                idx = 1, len = #data, k = {}, kidx = 0, buf = {}, memo = {},\n");
         sb.push_str(&format!("                unpack = q.{k_un}, char = q.{k_ch}, byte = q.{k_by}, floor = q.{k_fl}, insert = q.{k_ins}, concat = q.{k_cat}, remove = q.{k_rem}, reverse = q.{k_rev},\n"));
+        // sample2 §2.2 buffer 通道：buffer 句柄由 m_main 从壳对象传入（见 m_main 头部）
+        sb.push_str("                wbuf = b_cre, create = b_cre, wb = b_wb, rb = b_rb, rs = b_rs,\n");
+        sb.push_str("                push = h_push, size = h_size, copy = h_copy, snap = h_snap,\n");
         sb.push_str("                bc = 0, res = {}, f = 0, p1 = 0, p2 = 0, w = 0, u = 0, ptr = 0\n");
         sb.push_str("            });\n        end\n");
         // 第 3/5 类：内建别名 + 样板填充函数，作为壳表的附加字段（sample2 的壳里
