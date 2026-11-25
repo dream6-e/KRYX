@@ -48,9 +48,9 @@ pub fn generate_split(use_debug: bool, key_var: &str) -> AntiTamperResult {
 
 /// 带 KX1 加密池的入口。
 ///
-/// `shell` 是外层壳表变量名；`keys` 是壳表里 10 个 bit32/内建字段名
-/// `[floor, char, concat, pcall, bxor, band, bor, lshift, rshift, bnot]`；
-/// `kx` 是 KX1 额外要的 5 个 `[countlz, countrz, byteswap, lrotate, rrotate]`。
+/// `shell` / `keys` / `kx` 只用作「是否启用 KX1」的开关，不再被读取：
+/// 池解密所需的位运算全部直接走 `bit32` 全局。原因见 `split_impl` 里
+/// 关于壳表尚未构造的注释。
 pub fn generate_split_kx1(
     use_debug: bool,
     key_var: &str,
@@ -131,7 +131,6 @@ fn split_impl(
     // 壳表字段，只能用 bit32 / math / string 的全局直取。
     let v_kxdec = rand_var();
     let v_kxmul = rand_var();
-    let _ = kxenv;
     if kxenv.is_some() {
         let kw = kx1::keywords(&kx_key);
         let key_lit = kw.iter().map(|v| format!("0x{:X}", v)).collect::<Vec<_>>().join(",");
