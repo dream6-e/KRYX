@@ -69,6 +69,13 @@ impl Packer {
                     output.push(' ');
                 } else if matches!(prev.token_type, TokenType::Number) && token.text.starts_with('.') {
                     output.push(' ');
+                } else if prev.token_type == TokenType::Keyword
+                    && matches!(prev.text.as_str(), "end" | "break" | "true" | "false" | "nil")
+                    && matches!(token.token_type, TokenType::Identifier | TokenType::Number)
+                {
+                    // `end` / `break` 这类自带边界的词后面若紧跟标识符会被贪婪成同一个词
+                    // （例如 `end n[...]` → `endn[...]`），必须留空格。
+                    output.push(' ');
                 }
             }
             output.push_str(&token.text);

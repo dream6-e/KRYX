@@ -182,15 +182,25 @@ impl Generator {
         header_block.push_str(&format!("local {} = function(q, s, M, C) s[{}] = M; end; ", fn_N_, hex_select_idx));
         header_block.push_str(&format!("{}(nil, {}, {}.{}, nil); ", fn_N_, var_s, var_shell, k_sel));
         
+        // 这 8 个值都是同一批表的键：若彼此碰撞，后写入的字段会覆盖先写入的
+        // （历史上 key_add 撞 key_bx 时，加法把 bxor 顶掉，FN 里的 `pc+1` 变成位移，
+        // 触发 `arithmetic on nil` 的随机崩溃）。必须互不相同。
+        let mut key_pool: Vec<u64> = Vec::with_capacity(8);
+        while key_pool.len() < 8 {
+            let v = rng.range(0x10, 0x7F) as u64;
+            if !key_pool.contains(&v) {
+                key_pool.push(v);
+            }
+        }
         let keys = CipherKeys { 
-            grp1: rng.range(0x10, 0x7F) as u64, 
-            grp2: rng.range(0x10, 0x7F) as u64, 
-            key_bx: rng.range(0x10, 0x7F) as u64, 
-            key_ba: rng.range(0x10, 0x7F) as u64, 
-            key_add: rng.range(0x10, 0x7F) as u64, 
-            key_bs: rng.range(0x10, 0x7F) as u64, 
-            key_ba2: rng.range(0x10, 0x7F) as u64, 
-            key_bs2: rng.range(0x10, 0x7F) as u64, 
+            grp1: key_pool[0], 
+            grp2: key_pool[1], 
+            key_bx: key_pool[2], 
+            key_ba: key_pool[3], 
+            key_add: key_pool[4], 
+            key_bs: key_pool[5], 
+            key_ba2: key_pool[6], 
+            key_bs2: key_pool[7], 
             tbl_p: rng.name() 
         };
 
