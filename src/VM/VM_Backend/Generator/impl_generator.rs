@@ -617,6 +617,16 @@ impl Generator {
         let v_err_ok = rng.name();
         let v_run = rng.name();
         let v_hold = rng.name();
+        // 报错文本按 sample2 的「多转义混用」形态渲染：
+        // 十进制 / 十六进制 / 八进制 / \u{..} 定点 / \z 吞空白 随机交替。
+        let mut esc_variants: Vec<u8> = (0..64).map(|_| rng.range(0, 5) as u8).collect();
+        let mut esc_z: Vec<bool> = (0..64).map(|_| rng.range(0, 4) == 0).collect();
+        let mut vi = 0usize;
+        let mut zi = 0usize;
+        let (lit_tag, lit_inner) = super::entry_wrap::escaped_parts(
+            &mut || { let v = esc_variants[vi % esc_variants.len()]; vi += 1; v },
+            &mut || { let z = esc_z[zi % esc_z.len()]; zi += 1; z },
+        );
         let block_entry_wrap = super::entry_wrap::wrap_entry(
             &fn_run_wrap, &v_err_ok, &v_err_msg, &v_err_pos, &v_hold, "_",
             &format!("{}.{}", var_shell, k_pcall),
@@ -625,6 +635,7 @@ impl Generator {
             &format!("{}.{}", var_shell, k_match),
             &format!("{}.{}", var_shell, k_tostring),
             &format!("{}.{}", var_shell, k_error),
+            &lit_tag, &lit_inner,
         );
         out.push_str(&block_entry_wrap);
         out.push_str("\n");
