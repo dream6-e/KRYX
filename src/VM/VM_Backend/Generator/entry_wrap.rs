@@ -10,7 +10,7 @@
 //!      if not(K[0xc](P,":数字[:行号]")) then K[33](P,0X0)
 //!      else K[0X21]("Lua script:"..(H[F] or '(internal)')..": "..K[0b11101](P), 0X0)
 //!    ```
-//!    效果是把 VM 内部报错重写成「Lua script: <位置>: <消息>」，掩盖真实出错点。
+//!    效果是把 VM 内部报错重写成「Kryx script: <位置>: <消息>」，掩盖真实出错点。
 //!
 //! 2. `J` 末尾那段 `while true do` 三分支状态机：
 //!    两个分支 `continue`、一个 `break`，实际什么也不做，只留一个循环的假象。
@@ -55,14 +55,14 @@ pub fn escaped_literal(
     out
 }
 
-/// 渲染 `Lua script` / `internal` 两段，供 `wrap_entry` 嵌进生成的 Lua。
+/// 渲染 `Kryx script` / `internal` 两段，供 `wrap_entry` 嵌进生成的 Lua。
 pub fn escaped_parts(
     variants: &mut impl FnMut() -> u8,
     z_at: &mut impl FnMut() -> bool,
 ) -> (String, String) {
     let q = |t: String| format!("\"{}\"", t.replace('"', "\\\""));
     (
-        q(escaped_literal("Lua script", variants, z_at)),
+        q(escaped_literal("Kryx script", variants, z_at)),
         q(escaped_literal("internal", variants, z_at)),
     )
 }
@@ -71,7 +71,7 @@ pub fn escaped_parts(
 ///
 /// 先生成「偏应用」（第 5 项）：`(function(f,h) return function(...) return f(h,...) end end)(exec, chunk)`
 /// 再 pcall 它；出错时尝试从错误串里取出 `:数字` 形式的位置，重抛成
-/// `Lua script:<位置>: <消息>`，取不到位置就原样重抛。
+/// `Kryx script:<位置>: <消息>`，取不到位置就原样重抛。
 #[allow(clippy::too_many_arguments)]
 pub fn wrap_entry(
     wr: &str,
