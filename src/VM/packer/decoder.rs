@@ -37,7 +37,7 @@ impl Packer {
         let k_lf = rng.name();
         let k_gm = rng.name();
         // sample2 §2.2：解码结果是 buffer 而不是 string（buffer.create / writeu32）。
-        // 环境没有 buffer 时（lua5.1）退化成 string 通道，保持既有行为。
+        // 只支持 Luau（buffer 是 Luau 专有库），不做 lua5.1 回退。
         let k_buf = rng.name();
         let k_cre = rng.name();
         let k_wu = rng.name();
@@ -178,9 +178,9 @@ impl Packer {
             op_state0, tamper_val,
             cf_wrap::wrap_all(&[
                 "s.bc = 8;".into(),
-                // sample2 §2.2：解码输出落到 buffer。环境有 buffer 时开一块足够大的
-                // 缓冲区 + 写游标；没有 buffer（lua5.1）退回字符串表通道 s.res。
-                "if s.wbuf then s.rbuf = s.create(65536); s.rpos = 0; else s.res = {}; end;".into(),
+                // sample2 §2.2：解码输出落到 buffer。容量按压缩载荷长度放大估算
+                // （解压后必然大于压缩前，16x + 4K 对现有语料有充足余量）。
+                "s.rbuf = s.create(#s.data * 16 + 4096); s.rpos = 0;".into(),
                 format!("s.pc = {};", pc_state1),
             ], rng)
         ));
@@ -456,12 +456,11 @@ impl Packer {
         sb.push_str(&format!("    {}\n", cf_wrap::wrap_stmt(&format!("return q:{m_next}(s);"), rng)));
         sb.push_str("        end,\n");
         // ---------- buffer 通道辅助（sample2 §2.2：解码结果落 buffer）----------
-        // 环境有 buffer 时全部走 buffer；否则这 5 个方法等价于原来的
-        // `s.res[#s.res+1]=...` / `table.concat(s.res)` / `#s.res`，行为完全一致。
-        sb.push_str(&format!("        {} = function(s, _v) if s.rbuf then s.wb(s.rbuf, s.rpos, _v % 256); s.rpos = s.rpos + 1; else s.res[#s.res+1] = s.char(_v); end; end,\n", helper_push));
-        sb.push_str(&format!("        {} = function(s) if s.rbuf then return s.rpos; else return #s.res; end; end,\n", helper_size));
-        sb.push_str(&format!("        {} = function(s, _p) if s.rbuf then s.push(s, s.rb(s.rbuf, _p)); else s.res[#s.res+1] = s.res[_p + 1]; end; end,\n", helper_copy));
-        sb.push_str(&format!("        {} = function(s) if s.rbuf then return s.rs(s.rbuf, 0, s.rpos); else return s.concat(s.res); end; end,\n", helper_snap));
+        // 全部直接读写 buffer，无 lua5.1 表回退分支。
+        sb.push_str(&format!("        {} = function(s, _v) s.wb(s.rbuf, s.rpos, _v % 256); s.rpos = s.rpos + 1; end,\n", helper_push));
+        sb.push_str(&format!("        {} = function(s) return s.rpos; end,\n", helper_size));
+        sb.push_str(&format!("        {} = function(s, _p) s.push(s, s.rb(s.rbuf, _p)); end,\n", helper_copy));
+        sb.push_str(&format!("        {} = function(s) return s.rs(s.rbuf, 0, s.rpos); end,\n", helper_snap));
 
         // ---------- m_init_map ----------
         sb.push_str(&format!("        {m_init_map} = function(q, s, parts, i, kparts, kstr)\n"));
@@ -492,6 +491,11 @@ impl Packer {
         sb.push_str(&format!("            local h_push, h_size, h_copy, h_snap = q.{hp}, q.{hs}, q.{hc}, q.{hn};\n",
             hp = helper_push, hs = helper_size, hc = helper_copy, hn = helper_snap));
         sb.push_str("            return (function(s)\n");
+        // sample2 §2.2：s 是形参，表字面量里写不进去，必须在函数体里挂 buffer 通道。
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt(
+            "s.wbuf = b_cre; s.create = b_cre; s.wb = b_wb; s.rb = b_rb; s.rs = b_rs;", rng)));
+        sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt(
+            "s.push = h_push; s.size = h_size; s.copy = h_copy; s.snap = h_snap;", rng)));
         sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt(&format!("q:{m_init_map}(s);"), rng)));
         sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt(&format!("q:{m_init_insts}(s);"), rng)));
         sb.push_str(&format!("                {}\n", cf_wrap::wrap_stmt(&format!("q:{m_init_handlers}(s);"), rng)));
@@ -516,7 +520,7 @@ impl Packer {
         // 注意：载荷头部的 `KRYVEX` magic 前缀由 impl_generator 的 block_dec_header
         // 用 `string.sub(..., 7)` 跳过（与 sample2 跳 "LPH@" 同位），这里保持从 1 开始。
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.idx = 1; s.kidx = 0;", rng)));
-        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.buf = {}; s.res = {}; s.rbuf = nil; s.rpos = 0;", rng)));
+        sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.buf = {}; s.rbuf = nil; s.rpos = 0;", rng)));
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt(&format!("s.pc = {pc_state0}; s.bc = 0; s.f = 0; s.p1 = 0; s.p2 = 0; s.w = 0; s.u = 0; s.ptr = 0;"), rng)));
         sb.push_str(&format!("                    {}\n", cf_wrap::wrap_stmt("s.r_flg = false; s.r_vals = {}; s.r_len = 0; s.tail_flg = false;", rng)));
         sb.push_str(&format!("                    return q:{m_run}(s);\n"));
@@ -528,10 +532,11 @@ impl Packer {
         sb.push_str("                r_flg = false, r_vals = {}, r_len = 0, tail_flg = false,\n");
         sb.push_str("                idx = 1, len = #data, k = {}, kidx = 0, buf = {}, memo = {},\n");
         sb.push_str(&format!("                unpack = q.{k_un}, char = q.{k_ch}, byte = q.{k_by}, floor = q.{k_fl}, insert = q.{k_ins}, concat = q.{k_cat}, remove = q.{k_rem}, reverse = q.{k_rev},\n"));
-        // sample2 §2.2 buffer 通道：buffer 句柄由 m_main 从壳对象传入（见 m_main 头部）
-        sb.push_str("                wbuf = b_cre, create = b_cre, wb = b_wb, rb = b_rb, rs = b_rs,\n");
-        sb.push_str("                push = h_push, size = h_size, copy = h_copy, snap = h_snap,\n");
-        sb.push_str("                bc = 0, res = {}, f = 0, p1 = 0, p2 = 0, w = 0, u = 0, ptr = 0\n");
+        // sample2 §2.2 buffer 通道：这里只放占位，真正的句柄在 s 建好后
+        // 由 m_main 内的赋值语句写回（局部变量无法内联进表字面量的求值顺序）。
+        sb.push_str("                wbuf = false, create = false, wb = false, rb = false, rs = false,\n");
+        sb.push_str("                push = false, size = false, copy = false, snap = false,\n");
+        sb.push_str("                bc = 0, rbuf = nil, rpos = 0, f = 0, p1 = 0, p2 = 0, w = 0, u = 0, ptr = 0\n");
         sb.push_str("            });\n        end\n");
         // 第 3/5 类：内建别名 + 样板填充函数，作为壳表的附加字段（sample2 的壳里
         // 就挂着 `RP=bit32.band` / `u2=function(v)end` 这类字段）
@@ -542,8 +547,8 @@ impl Packer {
         }
         sb.push_str(&format!("    , {k_un} = unpack or table.unpack, {k_ch} = string.char, {k_by} = string.byte, {k_fl} = math.floor, {k_ins} = table.insert, {k_cat} = table.concat, {k_rem} = table.remove, {k_rev} = string.reverse, {k_lf} = loadstring or load, {k_gm} = string.gmatch\n    }});\n"));
         // sample2 §2.2：常量池解码结果是 buffer（`buffer.create` / `writeu32` / `readu8`）。
-        // 环境无 buffer（lua5.1）时这三个别名是 false，解码走 string 通道。
-        sb.push_str(&format!("    {k_shell}.{k_buf}, {k_shell}.{k_cre}, {k_shell}.{k_wu}, {k_shell}.{k_rd} = (buffer or false), (buffer and buffer.create or false), (buffer and buffer.writeu32 or false), (buffer and buffer.readu8 or false);\n", k_shell = shell_obj));
+        // 只走 Luau buffer 单条路径，不再做 lua5.1 回退。
+        sb.push_str(&format!("    {k_shell}.{k_buf}, {k_shell}.{k_cre}, {k_shell}.{k_wu}, {k_shell}.{k_rd}, {k_shell}.{k_wb}, {k_shell}.{k_rs}, {k_shell}.{k_ws} = buffer, buffer.create, buffer.writeu32, buffer.readu8, buffer.writeu8, buffer.readstring, buffer.writestring;\n", k_shell = shell_obj));
         // 第 6 类：IIFE（sample2 有 8 处 `(function(`，多为「只取出函数值存槽位」）。
         // 放在壳表建好之后、`m_main` 调用之前；每条用 `do ... end;` 包住，
         // 避免压缩器去分号后两个 IIFE 粘成链式调用 `f()(g)`。
