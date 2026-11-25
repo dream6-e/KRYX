@@ -623,7 +623,7 @@ impl Generator {
         let mut esc_z: Vec<bool> = (0..64).map(|_| rng.range(0, 4) == 0).collect();
         let mut vi = 0usize;
         let mut zi = 0usize;
-        let (lit_tag, lit_inner) = super::entry_wrap::escaped_parts(
+        let (lit_tag, lit_inner, lit_ty, lit_colon, lit_pat) = super::entry_wrap::escaped_parts(
             &mut || { let v = esc_variants[vi % esc_variants.len()]; vi += 1; v },
             &mut || { let z = esc_z[zi % esc_z.len()]; zi += 1; z },
         );
@@ -635,7 +635,7 @@ impl Generator {
             &format!("{}.{}", var_shell, k_match),
             &format!("{}.{}", var_shell, k_tostring),
             &format!("{}.{}", var_shell, k_error),
-            &lit_tag, &lit_inner,
+            &lit_tag, &lit_inner, &lit_ty, &lit_colon, &lit_pat,
         );
         out.push_str(&block_entry_wrap);
         out.push_str("\n");

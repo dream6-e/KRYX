@@ -35,19 +35,58 @@ pub fn escaped_literal(
     z_at: &mut impl FnMut() -> bool,
 ) -> String {
     let mut out = String::with_capacity(text.len() * 4 + 8);
+    let mut prev_was_z = false;
+    let mut prev_pad3 = false;
+    let mut prev_any_numeric_tail = false;
     for (i, ch) in text.chars().enumerate() {
+        // 上一位是十进制/补零写法且末位是数字时，本字符若原样输出会粘进转义。
+        let force_escape = prev_any_numeric_tail && ch.is_ascii_digit();
         let b = ch as u32;
         if i > 0 && z_at() {
             out.push('\\');
             out.push('z');
             out.push(' ');
+            prev_was_z = true;
+        } else {
+            prev_was_z = false;
         }
-        match variants() % 5 {
-            0 => out.push_str(&format!("\\{}", b)),
+        // `\z` 会吞掉其后全部空白。若紧跟其后的字符本身是空格且选择原样
+        // 输出，那个空格会被一起吞掉（"Kryx script" 变 "Kryxscript"）。
+        // 所以 `\z` 之后的空白字符必须强制走转义写法。
+        let mut v = variants() % 5;
+        if v == 4 && prev_was_z && ch.is_whitespace() {
+            v = 1;
+        }
+        if v == 4 && force_escape {
+            v = 1;
+        }
+        // `\ddd` 最多吃 3 位十进制数字，且 Lua 不检查是否超过 255：
+        // 若三位写法的末位正好是数字，会和下一个原样字符的数字粘连。
+        // 例如 `(` 写成 `\040` 后紧跟原样的 `4` 会变成 `\0404`，解析报
+        // malformed escape。所以：
+        //   · 三位写法只对 <= 99 的字符用（`\099` 后面必然是非数字或转义）；
+        //   · 紧跟其后的字符若也要原样输出、且本身是数字，则强制转义。
+        let three_digit_ok = b <= 99;
+        let mut v = if v == 2 && !three_digit_ok { 0 } else { v };
+        // 三位十进制后面不能跟原样数字
+        if prev_pad3 && ch.is_ascii_digit() && v == 4 {
+            v = 1;
+        }
+        prev_pad3 = false;
+        match v {
+            0 => {
+                // `\<十进制>` 若后接数字同样会粘连，这里统一补成 `\xHH` 之外的
+                // 两位形式不可靠，故 0 档也只在下一字符非数字时启用（见上层兜底）。
+                out.push_str(&format!("\\{}", b));
+                prev_any_numeric_tail = b >= 10;
+            }
             1 => out.push_str(&format!("\\x{:02X}", b)),
             // Lua 的 `\ddd` 是**十进制**转义（不是 C 的八进制），最多 3 位。
             // 早前按八进制输出导致 `\163` 变成 U+00A3，报错文本解码出错。
-            2 => out.push_str(&format!("\\{:03}", b)),
+            2 => {
+                out.push_str(&format!("\\{:02}", b));
+                prev_pad3 = true;
+            }
             3 => out.push_str(&format!("\\u{{{:X}}}", b)),
             _ => out.push(ch),
         }
@@ -55,16 +94,22 @@ pub fn escaped_literal(
     out
 }
 
-/// 渲染 `Kryx script` / `internal` 两段，供 `wrap_entry` 嵌进生成的 Lua。
+/// 渲染报错改写用到的全部字面量，供 `wrap_entry` 嵌进生成的 Lua。
+///
+/// 返回 `(品牌前缀, internal 兜底, "string", ":", 位置匹配模式)`。
+/// 连 `"string"`、`":"` 和 `":([0-9]+)[^0-9]*$"` 这种「结构性」字面量也一并
+/// 走多转义渲染 —— sample2 里连分隔符都是转义形态的。
 pub fn escaped_parts(
     variants: &mut impl FnMut() -> u8,
     z_at: &mut impl FnMut() -> bool,
-) -> (String, String) {
-    let q = |t: String| format!("\"{}\"", t.replace('"', "\\\""));
-    (
-        q(escaped_literal("Kryx script", variants, z_at)),
-        q(escaped_literal("internal", variants, z_at)),
-    )
+) -> (String, String, String, String, String) {
+    let mut q = |t: &str| format!("\"{}\"", escaped_literal(t, variants, z_at));
+    let tag = q("Kryx script");
+    let inner = q("internal");
+    let ty = q("string");
+    let colon = q(":");
+    let pat = q(":([0-9]+)[^0-9]*$");
+    (tag, inner, ty, colon, pat)
 }
 
 /// 第 7 项：执行器包裹。
@@ -90,18 +135,21 @@ pub fn wrap_entry(
     error_expr: &str,
     lit_tag: &str,
     lit_internal: &str,
+    lit_string_ty: &str,
+    lit_colon: &str,
+    lit_pattern: &str,
 ) -> String {
     format!(
         "local function {wr}(...) \
             local {hold} = (function(f, h) return function({shift}, ...) return f(h, ...) end end)({exec}, main_chunk); \
             local {ok},{msg} = {pcall_expr}({hold}, {benv}, {{}}, {l}, ...); \
             if {ok} then return {msg} end; \
-            local {pos} = ({type_expr}({msg})=='string') and {match_expr}({msg}, ':([0-9]+)[^0-9]*$') or nil; \
+            local {pos} = ({type_expr}({msg})=={lit_string_ty}) and {match_expr}({msg}, {lit_pattern}) or nil; \
             if {pos} then \
-                {error_expr}({lit_tag}..':'..{pos}..': '..{tostring_expr}({msg})); \
+                {error_expr}({lit_tag}..{lit_colon}..{pos}..{lit_colon}..' '..{tostring_expr}({msg})); \
             end; \
             if {pos}==nil then \
-                {error_expr}({lit_tag}..': ('..{lit_internal}..'): '..{tostring_expr}({msg})); \
+                {error_expr}({lit_tag}..{lit_colon}..' ('..{lit_internal}..')'..{lit_colon}..' '..{tostring_expr}({msg})); \
             end; \
             {error_expr}({msg}); \
         end; "
