@@ -141,6 +141,10 @@ impl Generator {
         let k_lshift = rng.name();
         let k_rshift = rng.name();
         let k_bnot = rng.name();
+        // 第 7 项：错误重写需要的三个壳字段
+        let k_match = rng.name();
+        let k_tostring = rng.name();
+        let k_error = rng.name();
 
         let chacha_key: [u32; 8] = std::array::from_fn(|_| rng.next());
         let chacha_salt: u32 = rng.next();
@@ -239,6 +243,10 @@ impl Generator {
         let block_packer_vars = format!("local {}, {}, {}, {}, {}; ", var_junk, var_vc, var_builtin_reg, gget, gset);
 
         let fn_execute = "execute";
+        // 第 3 / 7 项（对齐 sample2）：给 execute 套一层「偏应用 + 展开调用 + pcall 错误重写」。
+        // sample2 的形态是 `h=u[0x3d](h,u[0x10])(v,K,v.s,...)` —— 先偏应用再展开；
+        // 出错时把内部错误重写成 `Lua script: <位置>: <消息>`，掩盖真实出错点。
+        let fn_run_wrap = rng.name();
         let var_pc = rng.name();
         let var_stk = rng.name();
         let var_top = rng.name();
@@ -599,6 +607,28 @@ impl Generator {
         }
 
         out.push_str(&format!("local main_chunk={}(); ", fn_decode_chunk));
+        // 第 7 项（对齐 sample2 的 _P 尾部）：把执行器调用包进上层 pcall，
+        // 出错时用 string.match 取出 ":数字" 形式的位置信息，重抛成
+        // `Lua script: <位置>: <消息>`；取不到位置就原样重抛。
+        //   P  = pcall(执行器) 的第二个返回值（成功值 / 错误值）
+        //   Sf = 位置信息（H[F] 的等价物，取不到时用 '(internal)'）
+        let v_err_msg = rng.name();
+        let v_err_pos = rng.name();
+        let v_err_ok = rng.name();
+        let v_run = rng.name();
+        let v_hold = rng.name();
+        let block_entry_wrap = super::entry_wrap::wrap_entry(
+            &fn_run_wrap, &v_err_ok, &v_err_msg, &v_err_pos, &v_hold, "_",
+            &format!("{}.{}", var_shell, k_pcall),
+            fn_execute, &var_boot_env, &var_l,
+            &format!("{}.{}", var_shell, k_type),
+            &format!("{}.{}", var_shell, k_match),
+            &format!("{}.{}", var_shell, k_tostring),
+            &format!("{}.{}", var_shell, k_error),
+        );
+        out.push_str(&block_entry_wrap);
+        out.push_str("\n");
+
         out.push_str(&at.trigger);
         out.push_str(&format!(" {} = {{}}; local {} = (getfenv and getfenv() or _ENV or _G); local {}; ", var_builtin_reg, var_boot_env, var_bname));
         for (i, name) in Opcodes::builtins::BUILTIN_NAMES.iter().enumerate() {
@@ -646,11 +676,36 @@ impl Generator {
         out.push_str(" ");
         // sample2 的收尾：`}):J()(...)` —— J 是表方法，返回一个可调用真身，
         // 真身再被 `(...)` 立即调用（真身内部就是执行器跑主 chunk）。
-        out.push_str(&format!(
-            "return {}(main_chunk, {}, {{}}, {}) end,{}=function(v)return function(...)return v:{}()end end",
-            fn_execute, var_boot_env, var_l, fn_shell_entry, wai));
-        out.push_str(&format!(",{}=select,{}=math.floor,{}=math.random,{}=string.char,{}=string.byte,{}=string.sub,{}=table.concat,{}=unpack or table and table.unpack or function() end,{}=pcall,{}=setmetatable,{}=type,{}=pairs,{}=bit32 and bit32.bxor or bit and bit.bxor or function(a_,b_)a_,b_=a_%4294967296,b_%4294967296;local r,p=0,1;while a_>0 or b_>0 do local ra,rb=a_%2,b_%2;if ra~=rb then r=r+p end;a_,b_,p=(a_-a_%1)/2,(b_-b_%1)/2,p*2 end;return r end,{}=bit32 and bit32.band or bit and bit.band or function(a_,b_)a_,b_=a_%4294967296,b_%4294967296;local r,p=0,1;while a_>0 and b_>0 do local ra,rb=a_%2,b_%2;if ra==1 and rb==1 then r=r+p end;a_,b_,p=(a_-a_%1)/2,(b_-b_%1)/2,p*2 end;return r end,{}=bit32 and bit32.bor or bit and bit.bor or function(a_,b_)a_,b_=a_%4294967296,b_%4294967296;local r,p=0,1;while a_>0 or b_>0 do local ra,rb=a_%2,b_%2;if ra==1 or rb==1 then r=r+p end;a_,b_,p=(a_-a_%1)/2,(b_-b_%1)/2,p*2 end;return r end,{}=bit32 and bit32.lshift or bit and (bit.lshift or bit.lsh) or function(a_,n)a_=a_%4294967296;return (a_*(2^n))%4294967296 end,{}=bit32 and bit32.rshift or bit and bit.rshift or function(a_,n)a_=a_%4294967296;return (a_ - a_ % (2^n)) / (2^n) end,{}=bit32 and bit32.bnot or bit and bit.bnot or function(a_)a_=a_%4294967296;return 4294967295 - a_ end",
-            k_sel, k_floor, k_random, k_char, k_byte, k_sub, k_concat, k_unpack, k_pcall, k_setmt, k_type, k_pairs, k_bx, k_band, k_bor, k_lshift, k_rshift, k_bnot));
+        // 第 4 项（对齐 sample2 的 J 尾部）：无害三分支状态机
+        let block_sm = super::entry_wrap::StateMachine {
+            st: rng.name(),
+            mid: rng.range(0x40, 0x4B),
+            lo: 0x39,
+            hi: 0x4C,
+            reg: var_builtin_reg.clone(),
+            key: rng.range(0x1000, 0x7FFF),
+            rrot: "bit32.rrotate",
+            cntrz: "bit32.countrz",
+            band: "bit32.band",
+        }
+        .render();
+        out.push_str(&block_sm);
+        out.push_str(&format!("return {}(...) end,{}=function({})return function(...)return {}:{}(...)end end",
+            fn_run_wrap, fn_shell_entry, "v", "v", wai));
+        let _ = (fn_execute, var_l);
+        // 第 8 项：数据字段随机穿插 + bit32 兼容垫片（全在 data_fields 模块里）
+        out.push_str(&super::data_fields::interleaved_fields(
+            &[
+                &k_sel, &k_floor, &k_random, &k_char, &k_byte,
+                &k_sub, &k_concat, &k_unpack, &k_pcall, &k_setmt,
+                &k_type, &k_pairs, &k_match, &k_tostring, &k_error,
+            ],
+            &(0..2).map(|_| rng.name()).collect::<Vec<_>>(),
+            |lo, hi| rng.range(lo, hi),
+        ));
+        out.push_str(&super::data_fields::bit32_shims(
+            &k_bx, &k_band, &k_bor, &k_lshift, &k_rshift, &k_bnot,
+        ));
         out.push_str(&format!(" }}):{}()(...)", fn_shell_entry));
         out
     }

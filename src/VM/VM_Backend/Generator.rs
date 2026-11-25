@@ -743,3 +743,5 @@ fn build_opcode_tree(handlers: &[(u32, String)], min_idx: usize, max_idx: usize,
 
 
 mod impl_generator;
+mod data_fields;
+mod entry_wrap;
