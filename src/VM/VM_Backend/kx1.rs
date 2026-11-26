@@ -177,6 +177,38 @@ pub fn encrypt(plain: &[u8], key: &[u8], nonce: u32) -> Vec<u8> {
 ///   `key`  —— 16 个 32 位密钥字的字面量表（由调用方渲染成 Lua）
 ///   `nonce` —— 计数器初值
 ///
+/// 把一个 32 位字拆成 4 个字节，用「可逆的字节级混淆」写成表达式。
+/// 这样产物里不会出现完整的 0xXXXXXXXX 常量。
+fn split_word_expr(w: u32, salt: u8, sv: &str) -> String {
+    let b = w.to_le_bytes();
+    // 每个字节先 xor salt 再以十进制写出；运行时用同一个 salt 变量还原。
+    let p: Vec<String> = b.iter().map(|x| ((x ^ salt) as u32).to_string()).collect();
+    // 注意：Lua 的 `^` 是幂运算，不是异或，必须用 bit32.bxor。
+    format!(
+        "(bit32.bxor({0},{4})%256+bit32.bxor({1},{4})%256*256+bit32.bxor({2},{4})%256*65536+bit32.bxor({3},{4})%256*16777216)",
+        p[0], p[1], p[2], p[3], sv
+    )
+}
+
+/// 生成「密钥字表」的 Lua 代码，返回 `(前置语句, 表字面量表达式)`。
+///
+/// 产物里不再有 16 个连续的 u32 明文常量：每个字拆成 4 个字节，各自与
+/// `salt` 异或后以十进制写出。`salt` 由 nonce 派生 —— nonce 是生成期
+/// 常量、运行期同样以字面量出现，两边必然一致。
+///
+/// 注意不要改用壳表字段名派生 salt：那些名字会被 `Names::shrink` 缩成
+/// 1~2 字符，生成期算出的长度和运行期看到的对不上。
+pub fn key_words_expr(kw: &[u32; 16], nonce: u32) -> (String, String) {
+    // salt 只由 nonce 派生 —— nonce 是生成期常量、运行期也以字面量出现，
+    // 两边必然一致。不要用壳表字段名：那些名字会被 Names::shrink 缩成
+    // 1~2 字符，生成期算出的长度和运行期看到的对不上。
+    let salt = (((nonce as u64) * 33 + 5381) % 4294967296 % 256) as u8;
+    let sv = "kxS";
+    let words: Vec<String> = kw.iter().map(|w| split_word_expr(*w, salt, sv)).collect();
+    let pre = format!("local {sv}={};", salt);
+    (pre, format!("{{{}}}", words.join(",")))
+}
+
 /// 返回的代码定义 `kw`（密钥调度结果）、`kxks(n)`（取 n 字节密钥流），
 /// 以及一个 `kxdec(bytes)` —— 把池里的字节数组解密成字符串。
 pub fn lua_decrypt_lib(
@@ -192,7 +224,7 @@ pub fn lua_decrypt_lib(
         E = E.iter().map(|v| format!("0x{:X}", v)).collect::<Vec<_>>().join(","),
         R = R.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
     ) + &format!(
-        "local kxKW={{{key}}}; local kxCTR={nonce}; ",
+        "local kxKW={key}; local kxCTR={nonce}; ",
         key = key_lit, nonce = nonce_lit
     ) + &format!(
         "local function kxQ(s,o,k,r1,r2,rd) local a,b,c,d=o,o+1,o+2,o+3;

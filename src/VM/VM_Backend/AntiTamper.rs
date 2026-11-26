@@ -131,9 +131,14 @@ fn split_impl(
     // 壳表字段，只能用 bit32 / math / string 的全局直取。
     let v_kxdec = rand_var();
     let v_kxmul = rand_var();
-    if kxenv.is_some() {
+    if let Some((shell, keys, _)) = kxenv {
         let kw = kx1::keywords(&kx_key);
-        let key_lit = kw.iter().map(|v| format!("0x{:X}", v)).collect::<Vec<_>>().join(",");
+        // 密钥字表不再以 16 个明文 u32 常量的形式出现：拆成字节级表达式，
+        // 每个字节与随机 salt 异或，salt 又由壳表里两个真实字段名派生。
+        let (key_pre, key_lit) =
+            kx1::key_words_expr(&kw, kx_nonce);
+        setup.push_str(&key_pre);
+        setup.push('\n');
         setup.push_str(&format!(
             "local {m} = function(a,b) a=a%4294967296;b=b%4294967296;\
              local a0=a%65536;local a1=(a-a0)/65536;\
