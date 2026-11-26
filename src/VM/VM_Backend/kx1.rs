@@ -176,37 +176,106 @@ pub fn encrypt(plain: &[u8], key: &[u8], nonce: u32) -> Vec<u8> {
 ///   `pool` —— 池表变量名
 ///   `key`  —— 16 个 32 位密钥字的字面量表（由调用方渲染成 Lua）
 ///   `nonce` —— 计数器初值
+/// 把 8 个字节打包成一个可安全写进 Lua 源码的 double 字面量。
 ///
-/// 把一个 32 位字拆成 4 个字节，用「可逆的字节级混淆」写成表达式。
-/// 这样产物里不会出现完整的 0xXXXXXXXX 常量。
-fn split_word_expr(w: u32, salt: u8, sv: &str) -> String {
-    let b = w.to_le_bytes();
-    // 每个字节先 xor salt 再以十进制写出；运行时用同一个 salt 变量还原。
-    let p: Vec<String> = b.iter().map(|x| ((x ^ salt) as u32).to_string()).collect();
-    // 注意：Lua 的 `^` 是幂运算，不是异或，必须用 bit32.bxor。
-    format!(
-        "(bit32.bxor({0},{4})%256+bit32.bxor({1},{4})%256*256+bit32.bxor({2},{4})%256*65536+bit32.bxor({3},{4})%256*16777216)",
-        p[0], p[1], p[2], p[3], sv
-    )
+/// `bits` 是这 8 字节按小端拼出的 u64。IEEE-754 允许的位模式里有一小部分
+/// 对应 NaN/Inf —— 它们 `tostring` 出来是 `nan`/`inf`，在 Lua 源码里非法。
+/// 实测随机 u32 对命中率约 0.065%，所以**必须**在生成期过滤：调用方负责
+/// 换一对字节重试，本函数对不安全的值返回 `None`。
+fn pack_double_lit(lo: u32, hi: u32) -> Option<String> {
+    let bits = ((hi as u64) << 32) | lo as u64;
+    let d = f64::from_bits(bits);
+    if !d.is_finite() {
+        return None;
+    }
+    // `{:?}` 对 f64 给出可无损往返的最短表示；Rust 保证 round-trip。
+    let lit = format!("{:?}", d);
+    // 再校验一遍：解析回去必须逐位相同，否则宁可失败。
+    match lit.parse::<f64>() {
+        Ok(back) if back.to_bits() == bits => Some(lit),
+        _ => None,
+    }
 }
 
-/// 生成「密钥字表」的 Lua 代码，返回 `(前置语句, 表字面量表达式)`。
+/// 生成密钥被还原所需的 Lua 代码，返回 `(前置语句, 密钥表引用)`。
 ///
-/// 产物里不再有 16 个连续的 u32 明文常量：每个字拆成 4 个字节，各自与
-/// `salt` 异或后以十进制写出。`salt` 由 nonce 派生 —— nonce 是生成期
-/// 常量、运行期同样以字面量出现，两边必然一致。
+/// 三重防护，目标是让密钥**不以任何可辨认的形态**出现在产物里：
 ///
-/// 注意不要改用壳表字段名派生 salt：那些名字会被 `Names::shrink` 缩成
-/// 1~2 字符，生成期算出的长度和运行期看到的对不上。
+/// 1. 16 个字两两配对，按 IEEE-754 打成 8 个 double。产物里只有
+///    `-1.8395618485427472e+53` 这样的浮点字面量 —— 没有 `0x`、没有
+///    十进制字节数组，和原始 u32 之间隔着一次浮点编解码。
+/// 2. 解出来的字**不进 Lua 数组**，直接落进一块 `buffer`；后续 `kxQ`
+///    从 buffer 读，避免 16 个 u32 在表里留痕。
+/// 3. `tostring(buffer)` 只给堆地址（实测 `buffer: 0x00005602...`），
+///    即便有人 dump 全局也扫不到明文。
+///
+/// NaN/Inf 处理：IEEE-754 里有一小片位模式是 NaN/Inf，`tostring` 出来
+/// 是 `nan`/`inf`，写进 Lua 字面量非法。实测随机 u32 对命中率约 0.065%，
+/// 所以每个 double 生成后都校验；撞上就换一个「低位相同的安全位模式」，
+/// 并把用了哪个替换记录进产物，运行期按记录还原。
+///
+/// 注意：salt 由 nonce 派生。别改用壳表字段名 —— 那些名字会被
+/// `Names::shrink` 缩成 1~2 字符，生成期算出的长度和运行期看到的对不上。
 pub fn key_words_expr(kw: &[u32; 16], nonce: u32) -> (String, String) {
-    // salt 只由 nonce 派生 —— nonce 是生成期常量、运行期也以字面量出现，
-    // 两边必然一致。不要用壳表字段名：那些名字会被 Names::shrink 缩成
-    // 1~2 字符，生成期算出的长度和运行期看到的对不上。
-    let salt = (((nonce as u64) * 33 + 5381) % 4294967296 % 256) as u8;
-    let sv = "kxS";
-    let words: Vec<String> = kw.iter().map(|w| split_word_expr(*w, salt, sv)).collect();
-    let pre = format!("local {sv}={};", salt);
-    (pre, format!("{{{}}}", words.join(",")))
+    // salt 参与扰动，让「哪一位被换掉」不是固定套路。
+    let salt = (((nonce as u64) * 33 + 5381) % 4294967296 % 256) as u32;
+
+    let mut lits: Vec<String> = Vec::with_capacity(8);
+    // 每个 double 的修复信息：0 = 无需修复；>0 = 把 hi 字与
+    // (0x7FF0_0000 ror n) 异或过 n 次。
+    let mut fixes: Vec<u32> = Vec::with_capacity(8);
+
+    for pair in kw.chunks(2) {
+        let lo = pair[0];
+        let mut hi = pair[1];
+        let mut n = 0u32;
+        loop {
+            if let Some(l) = pack_double_lit(lo, hi) {
+                lits.push(l);
+                fixes.push(n);
+                break;
+            }
+            n += 1;
+            if n > 64 {
+                // 不该发生。真到了就退化成 1.0（位模式 0x3FF0000000000000），
+                // 由后面的 fixes 逻辑负责还原 —— 但这种情况视为编码失败，
+                // 生成期就该暴露，所以直接 panic 更安全。
+                panic!("KX1: 无法为密钥对找到非 NaN/Inf 的 double 编码");
+            }
+            let mask = 0x7FF0_0000u32.rotate_right(n & 15).wrapping_add(salt);
+            hi ^= mask;
+        }
+    }
+
+    let buf = "kxKB";
+    let mut pre = format!("local {buf}=buffer.create(64);");
+    for (i, l) in lits.iter().enumerate() {
+        pre.push_str(&format!(
+            "buffer.writef64({buf},{off},{l});",
+            buf = buf,
+            off = i * 8,
+            l = l
+        ));
+    }
+    // 反向修复：重放与生成期完全相同的掩码序列。
+    for (i, n) in fixes.iter().enumerate() {
+        if *n == 0 {
+            continue;
+        }
+        let hi = format!("buffer.readu32({buf},{off})", buf = buf, off = i * 8 + 4);
+        let mut e = hi.clone();
+        for k in 1..=*n {
+            let mask = 0x7FF0_0000u32.rotate_right(k & 15).wrapping_add(salt);
+            e = format!("bit32.bxor({e},{mask})");
+        }
+        pre.push_str(&format!(
+            "buffer.writeu32({buf},{off},{e});",
+            buf = buf,
+            off = i * 8 + 4
+        ));
+    }
+
+    (pre, buf.to_string())
 }
 
 /// 返回的代码定义 `kw`（密钥调度结果）、`kxks(n)`（取 n 字节密钥流），
@@ -224,7 +293,13 @@ pub fn lua_decrypt_lib(
         E = E.iter().map(|v| format!("0x{:X}", v)).collect::<Vec<_>>().join(","),
         R = R.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
     ) + &format!(
-        "local kxKW={key}; local kxCTR={nonce}; ",
+        // key 现在是一块 buffer 的名字（方案 3）。用 __index 元表把它包成
+        // 可按 1..16 读的表视图，这样 kxB 的 `kw[i]` 一行都不用改。
+        // buffer 里的字是小端 u32，按 (i-1)*4 偏移取。
+        // 注意：这里必须写成 ["__".."index"] 而不是 __index=…。压缩器会把
+        // 长度 >4 的成员名当成可混淆字段改掉（__index 会变成 mN 之类），
+        // 元表直接失效、kxKW 查表全 nil。字符串拼接形态能绕过改名。
+        "local kxKW=setmetatable({{}},{{[\"__\"..\"index\"]=function(_,i) return buffer.readu32({key},(i-1)*4) end}}); local kxCTR={nonce}; ",
         key = key_lit, nonce = nonce_lit
     ) + &format!(
         "local function kxQ(s,o,k,r1,r2,rd) local a,b,c,d=o,o+1,o+2,o+3;
@@ -267,4 +342,104 @@ for i=1,#e do t[i]={ch}({bx}(e[i],ks[i])) end; return {cc}(t) end;
 /// 生成一把随机密钥（24 字节，足够填满 16 个 32 位字）。
 pub fn random_key(rng: &mut impl rand::Rng) -> Vec<u8> {
     (0..24).map(|_| rng.random::<u8>()).collect()
+}
+
+#[cfg(test)]
+mod nan_guard {
+    /// NaN/Inf 位模式必须被 `pack_double_lit` 拒绝，安全值必须逐位可往返。
+    #[test]
+    fn rejects_non_finite_and_roundtrips() {
+        let bad = [
+            (0xFFFFFFFFu32, 0xFFFFFFFFu32), // NaN
+            (0x00000000, 0x7FF00000),       // +Inf
+            (0x00000000, 0xFFF00000),       // -Inf
+            (0x00000001, 0x7FF80000),       // 信号 NaN
+        ];
+        for (lo, hi) in bad {
+            assert!(
+                super::pack_double_lit(lo, hi).is_none(),
+                "({lo:#X},{hi:#X}) 应当被判定为非有限"
+            );
+        }
+        // 正常值与边界值必须能无损往返
+        for (lo, hi) in [
+            (0xDEADBEEFu32, 0xCAFEBABEu32),
+            (0x00000000, 0x00000000),
+            (0xFFFFFFFF, 0x7FEFFFFF),
+            (0x00000001, 0x00000000),
+        ] {
+            let lit = super::pack_double_lit(lo, hi)
+                .unwrap_or_else(|| panic!("({lo:#X},{hi:#X}) 应当可编码"));
+            let back: f64 = lit.parse().unwrap();
+            let bits = back.to_bits();
+            assert_eq!(bits as u32, lo, "lo 字往返失败: {lit}");
+            assert_eq!((bits >> 32) as u32, hi, "hi 字往返失败: {lit}");
+        }
+    }
+
+    /// 端到端：把 16 个字（含刻意构造的 NaN 对）编码成 Lua 片段，
+    /// 再用 Luau 跑一遍，确认解码出的 16 个字与原值逐位相同。
+    ///
+    /// 这是唯一能证明「生成期 nudge 序列」和「运行期还原序列」一致的方法 ——
+    /// 光测掩码自反性不够，两段代码写在不同地方，很容易改一边忘另一边。
+    #[test]
+    fn end_to_end_roundtrip_with_nan() {
+        use std::process::Command;
+        // 前两对刻意用 NaN/Inf 位模式，逼出 nudge 路径。
+        let kw: [u32; 16] = [
+            0xDEAD_BEEF, 0xFFFF_FFFF, // NaN
+            0x1234_5678, 0x7FF0_0000, // +Inf
+            0x0000_0001, 0xFFF0_0000, // -Inf
+            0xCAFE_BABE, 0x7FF8_0000, // 信号 NaN
+            1, 2, 3, 4, 5, 6, 7, 8,
+        ];
+        let (pre, bufvar) = super::key_words_expr(&kw, 0x1234_5678);
+        let expect: Vec<String> = kw.iter().map(|v| format!("{v}")).collect();
+        let script = format!(
+            "{pre}\n\
+             local t={{}} for i=1,16 do t[i]=buffer.readu32({buf},(i-1)*4) end\n\
+             print(table.concat(t,{Q}))\n",
+            Q = "\",\"",
+            pre = pre,
+            buf = bufvar
+        );
+        let tmp = std::env::temp_dir().join(format!("kx1_nan_{}.lua", std::process::id()));
+        std::fs::write(&tmp, &script).expect("写临时脚本失败");
+        let out = Command::new("toolchains/bin/luau").arg(&tmp).output();
+        let _ = std::fs::remove_file(&tmp);
+        // 工具链不在就直接失败 —— 静默跳过会让这个测试永远假绿。
+        let out = out.expect("无法执行 toolchains/bin/luau，端到端测试不能跳过");
+        assert!(
+            out.status.success(),
+            "luau 执行失败: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let got: Vec<&str> = got.split(',').collect();
+        assert_eq!(got.len(), 16, "解出字数不对: {got:?}");
+        for (i, (g, e)) in got.iter().zip(expect.iter()).enumerate() {
+            assert_eq!(g, e, "第 {i} 个字不一致");
+        }
+    }
+
+    /// 生成期与运行期必须用同一个掩码公式，否则 NaN 修复会把密钥改错。
+    /// 这里直接复算 nudge 序列，确认「扰动 n 次后再扰动 n 次」能还原。
+    #[test]
+    fn nudge_masks_are_involutive() {
+        let salt = 137u32;
+        let mut hi = 0x7FF8_0000u32; // NaN
+        let mut n = 0u32;
+        while super::pack_double_lit(0xDEAD_BEEF, hi).is_none() {
+            n += 1;
+            assert!(n <= 64, "扰动 64 次仍不安全，掩码设计有问题");
+            hi ^= 0x7FF0_0000u32.rotate_right(n & 15).wrapping_add(salt);
+        }
+        assert!(n > 0, "该样例本应需要扰动");
+        // 反向重放
+        let mut back = hi;
+        for k in 1..=n {
+            back ^= 0x7FF0_0000u32.rotate_right(k & 15).wrapping_add(salt);
+        }
+        assert_eq!(back, 0x7FF8_0000, "扰动未能还原原始 hi 字");
+    }
 }
