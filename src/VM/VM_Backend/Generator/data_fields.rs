@@ -95,6 +95,15 @@ pub fn bit32_shims(bx: &str, band: &str, bor: &str, lshift: &str, rshift: &str, 
     )
 }
 
+/// buffer 库与其三个 API 的壳表别名（对齐 sample2 的 `r=buffer` 写法）。
+///
+/// sample2 里 `buffer` 出现 0 次直接调用：库名挂成 1 字符字段，具体 API
+/// 取到后存进随机数字槽位。这里把 `buffer` / `writef64` / `readu32` 三个
+/// 名字都做成随机 1~2 字符的字段，正文只写 `{shell}.{别名}`。
+pub fn buffer_alias_fields(buf: &str, wf64: &str, ru32: &str, wu32: &str) -> String {
+    format!(",{buf}=buffer,{wf64}=buffer.writef64,{ru32}=buffer.readu32,{wu32}=buffer.writeu32")
+}
+
 /// 一步到位：构造字段表 → 打散 → 按随机间隔穿插出表字面量片段。
 pub fn interleaved_fields(
     names: &[&String; 20],
@@ -113,6 +122,13 @@ pub struct Kx1Fields {
     pub swap: String,
     pub lrot: String,
     pub rrot: String,
+    // buffer 相关的三个别名。sample2 里 buffer 库和它的 API 都挂成
+    // 1~2 字符的表字段（`r=buffer`、`m[0x13]=p.readi32`），正文里从不出
+    // 现 `buffer.create` / `buffer.writef64` 这种直呼。这里照着做。
+    pub buf: String,
+    pub wf64: String,
+    pub ru32: String,
+    pub wu32: String,
 }
 
 impl Kx1Fields {
@@ -123,6 +139,10 @@ impl Kx1Fields {
             swap: rng.name(),
             lrot: rng.name(),
             rrot: rng.name(),
+            buf: rng.name(),
+            wf64: rng.name(),
+            ru32: rng.name(),
+            wu32: rng.name(),
         }
     }
     pub fn names(&self) -> [&str; 5] {

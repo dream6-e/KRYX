@@ -168,9 +168,9 @@ pub struct StateMachine {
     pub hi: usize,
     pub reg: String,
     pub key: usize,
-    pub rrot: &'static str,
-    pub cntrz: &'static str,
-    pub band: &'static str,
+    pub rrot: String,
+    pub cntrz: String,
+    pub band: String,
 }
 
 impl StateMachine {

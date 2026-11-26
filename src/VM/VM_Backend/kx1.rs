@@ -216,7 +216,14 @@ fn pack_double_lit(lo: u32, hi: u32) -> Option<String> {
 ///
 /// 注意：salt 由 nonce 派生。别改用壳表字段名 —— 那些名字会被
 /// `Names::shrink` 缩成 1~2 字符，生成期算出的长度和运行期看到的对不上。
-pub fn key_words_expr(kw: &[u32; 16], nonce: u32) -> (String, String) {
+pub fn key_words_expr(
+    kw: &[u32; 16],
+    nonce: u32,
+    buf_lib: &str,
+    wf64: &str,
+    ru32: &str,
+    wu32: &str,
+) -> (String, String) {
     // salt 参与扰动，让「哪一位被换掉」不是固定套路。
     let salt = (((nonce as u64) * 33 + 5381) % 4294967296 % 256) as u32;
 
@@ -248,10 +255,12 @@ pub fn key_words_expr(kw: &[u32; 16], nonce: u32) -> (String, String) {
     }
 
     let buf = "kxKB";
-    let mut pre = format!("local {buf}=buffer.create(64);");
+    // 走壳表别名：不出现 buffer.create / buffer.writef64 直呼。
+    let mut pre = format!("local {buf}={buf_lib}.create(64);");
     for (i, l) in lits.iter().enumerate() {
         pre.push_str(&format!(
-            "buffer.writef64({buf},{off},{l});",
+            "{wf64}({buf},{off},{l});",
+            wf64 = wf64,
             buf = buf,
             off = i * 8,
             l = l
@@ -262,14 +271,15 @@ pub fn key_words_expr(kw: &[u32; 16], nonce: u32) -> (String, String) {
         if *n == 0 {
             continue;
         }
-        let hi = format!("buffer.readu32({buf},{off})", buf = buf, off = i * 8 + 4);
+        let hi = format!("{ru}({buf},{off})", ru = ru32, buf = buf, off = i * 8 + 4);
         let mut e = hi.clone();
         for k in 1..=*n {
             let mask = 0x7FF0_0000u32.rotate_right(k & 15).wrapping_add(salt);
             e = format!("bit32.bxor({e},{mask})");
         }
         pre.push_str(&format!(
-            "buffer.writeu32({buf},{off},{e});",
+            "{wu}({buf},{off},{e});",
+            wu = wu32,
             buf = buf,
             off = i * 8 + 4
         ));
@@ -281,7 +291,7 @@ pub fn key_words_expr(kw: &[u32; 16], nonce: u32) -> (String, String) {
 /// 返回的代码定义 `kw`（密钥调度结果）、`kxks(n)`（取 n 字节密钥流），
 /// 以及一个 `kxdec(bytes)` —— 把池里的字节数组解密成字符串。
 pub fn lua_decrypt_lib(
-                      pool: &str, key_lit: &str, nonce_lit: &str,
+                      pool: &str, key_lit: &str, nonce_lit: &str, f_ru32: &str,
                       f_mul: &str, f_lsh: &str, f_rsh: &str, f_rrot: &str, f_lrot: &str,
                       f_cntlz: &str, f_cntrz: &str, f_swap: &str,
                       f_band: &str, f_bxor: &str, f_bor: &str, f_bnot: &str,
@@ -299,8 +309,8 @@ pub fn lua_decrypt_lib(
         // 注意：这里必须写成 ["__".."index"] 而不是 __index=…。压缩器会把
         // 长度 >4 的成员名当成可混淆字段改掉（__index 会变成 mN 之类），
         // 元表直接失效、kxKW 查表全 nil。字符串拼接形态能绕过改名。
-        "local kxKW=setmetatable({{}},{{[\"__\"..\"index\"]=function(_,i) return buffer.readu32({key},(i-1)*4) end}}); local kxCTR={nonce}; ",
-        key = key_lit, nonce = nonce_lit
+        "local kxKW=setmetatable({{}},{{[\"__\"..\"index\"]=function(_,i) return {ru}({key},(i-1)*4) end}}); local kxCTR={nonce}; ",
+        key = key_lit, nonce = nonce_lit, ru = f_ru32
     ) + &format!(
         "local function kxQ(s,o,k,r1,r2,rd) local a,b,c,d=o,o+1,o+2,o+3;
 s[a]=(s[a]+s[b])%4294967296;
@@ -393,11 +403,13 @@ mod nan_guard {
             0xCAFE_BABE, 0x7FF8_0000, // 信号 NaN
             1, 2, 3, 4, 5, 6, 7, 8,
         ];
-        let (pre, bufvar) = super::key_words_expr(&kw, 0x1234_5678);
+        let (pre, bufvar) = super::key_words_expr(&kw, 0x1234_5678, "B", "B.writef64", "B.readu32", "B.writeu32");
         let expect: Vec<String> = kw.iter().map(|v| format!("{v}")).collect();
         let script = format!(
-            "{pre}\n\
-             local t={{}} for i=1,16 do t[i]=buffer.readu32({buf},(i-1)*4) end\n\
+            "local B=buffer\n\
+             {pre}\n\
+             local bu=buffer\n\
+             local t={{}} for i=1,16 do t[i]=bu.readu32({buf},(i-1)*4) end\n\
              print(table.concat(t,{Q}))\n",
             Q = "\",\"",
             pre = pre,

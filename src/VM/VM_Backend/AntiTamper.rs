@@ -57,14 +57,15 @@ pub fn generate_split_kx1(
     shell: &str,
     keys: &[&str; 10],
     kx: &[&str; 5],
+    kbuf: &[&str; 4],
 ) -> AntiTamperResult {
-    split_impl(use_debug, key_var, Some((shell, keys, kx)))
+    split_impl(use_debug, key_var, Some((shell, keys, kx, kbuf)))
 }
 
 fn split_impl(
     use_debug: bool,
     key_var: &str,
-    kxenv: Option<(&str, &[&str; 10], &[&str; 5])>,
+    kxenv: Option<(&str, &[&str; 10], &[&str; 5], &[&str; 4])>,
 ) -> AntiTamperResult {
     let mut rng = thread_rng();
     
@@ -131,12 +132,20 @@ fn split_impl(
     // 壳表字段，只能用 bit32 / math / string 的全局直取。
     let v_kxdec = rand_var();
     let v_kxmul = rand_var();
-    if let Some((shell, keys, _)) = kxenv {
+    if let Some((shell, keys, kx, kbuf)) = kxenv {
         let kw = kx1::keywords(&kx_key);
-        // 密钥字表不再以 16 个明文 u32 常量的形式出现：拆成字节级表达式，
-        // 每个字节与随机 salt 异或，salt 又由壳表里两个真实字段名派生。
-        let (key_pre, key_lit) =
-            kx1::key_words_expr(&kw, kx_nonce);
+        // 密钥字表不再以 16 个明文 u32 常量的形式出现：两两打包成
+        // IEEE-754 double，产物里只有浮点字面量。
+        //
+        // buffer 与 writef64/readu32 一律走壳表别名（sample2 的
+        // `r=buffer` 写法），正文不出现 `buffer.create` 这种直呼。
+        let (key_pre, key_lit) = kx1::key_words_expr(
+            &kw, kx_nonce,
+            &format!("{}.{}", shell, kbuf[0]),        // buffer 库别名
+            &format!("{}.{}", shell, kbuf[1]),        // writef64
+            &format!("{}.{}", shell, kbuf[2]),        // readu32
+            &format!("{}.{}", shell, kbuf[3]),        // writeu32
+        );
         setup.push_str(&key_pre);
         setup.push('\n');
         setup.push_str(&format!(
@@ -146,13 +155,28 @@ fn split_impl(
              return (a0*b0+((a0*b1+a1*b0)%65536)*65536)%4294967296 end; local _ = {m};\n",
             m = v_kxmul
         ));
+        // bit32.* 也全部改走壳表字段，和 sample2 正文只写 v.RP/v.CP 一致。
+        // keys = [floor, char, concat, pcall, bxor, band, bor, lshift, rshift, bnot]
+        // kx   = [cntlz, cntrz, swap, lrot, rrot]
+        let r = |i: usize| format!("{}.{}", shell, keys[i]);
+        let k = |i: usize| format!("{}.{}", shell, kx[i]);
+        let ru32 = format!("{}.{}", shell, kbuf[2]);
         setup.push_str(&kx1::lua_decrypt_lib(
-            &v_pool, &key_lit, &kx_nonce.to_string(),
+            &v_pool, &key_lit, &kx_nonce.to_string(), &ru32,
             &v_kxmul,
-            "bit32.lshift", "bit32.rshift", "bit32.rrotate", "bit32.lrotate",
-            "bit32.countlz", "bit32.countrz", "bit32.byteswap",
-            "bit32.band", "bit32.bxor", "bit32.bor", "bit32.bnot",
-            "math.floor", "string.sub", "string.char", "table.concat",
+            &r(7),  // lshift
+            &r(8),  // rshift
+            &k(4),  // rrotate
+            &k(3),  // lrotate
+            &k(0),  // countlz
+            &k(1),  // countrz
+            &k(2),  // byteswap
+            &r(5),  // band
+            &r(4),  // bxor
+            &r(6),  // bor
+            &r(9),  // bnot
+            &r(0),  // math.floor
+            "string.sub", "string.char", "table.concat",
             &v_kxdec,
         ));
     } else {

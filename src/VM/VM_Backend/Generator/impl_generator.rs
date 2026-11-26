@@ -151,6 +151,7 @@ impl Generator {
             &[&k_floor, &k_char, &k_concat, &k_pcall,
               &k_bx, &k_band, &k_bor, &k_lshift, &k_rshift, &k_bnot],
             &kx.names(),
+            &[&kx.buf, &kx.wf64, &kx.ru32, &kx.wu32],
         );
 
         let chacha_key: [u32; 8] = std::array::from_fn(|_| rng.next());
@@ -687,9 +688,9 @@ impl Generator {
             hi: 0x4C,
             reg: var_builtin_reg.clone(),
             key: rng.range(0x1000, 0x7FFF),
-            rrot: "bit32.rrotate",
-            cntrz: "bit32.countrz",
-            band: "bit32.band",
+            rrot: format!("{}.{}", var_shell, kx.rrot),
+            cntrz: format!("{}.{}", var_shell, kx.cntrz),
+            band: format!("{}.{}", var_shell, k_band),
         }
         .render();
         out.push_str(&block_sm);
@@ -709,6 +710,11 @@ impl Generator {
         ));
         out.push_str(&super::data_fields::bit32_shims(
             &k_bx, &k_band, &k_bor, &k_lshift, &k_rshift, &k_bnot,
+        ));
+        // buffer 库与 writef64/readu32 挂成随机字段别名，正文改走
+        // {shell}.{别名}，不再直呼 buffer.create（对齐 sample2）。
+        out.push_str(&super::data_fields::buffer_alias_fields(
+            &kx.buf, &kx.wf64, &kx.ru32, &kx.wu32,
         ));
         out.push_str(&format!(" }}):{}()(...)", fn_shell_entry));
         out
