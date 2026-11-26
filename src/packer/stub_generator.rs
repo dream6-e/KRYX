@@ -33,6 +33,8 @@ impl StubGenerator {
         let v_wrap = pool.get();
         let sh = pool.get();
         let r_lf = pool.get();
+    // isNative 筛选 loadstring 用的形参名
+    let v_env = pool.get();
         let r_pc = pool.get();
         let r_er = pool.get();
         let r_ty = pool.get();
@@ -284,7 +286,31 @@ impl StubGenerator {
             return {f_concat}({v_s}.{p_r_vals});
         ", v_current=v_current, v_s=v_s, p_pc=p_pc, v_i=v_i, p_insts=p_insts, p_tamper=p_tamper, tamper_val=tamper_val, v_h=v_h, p_handlers=p_handlers, v_succ=v_succ, v_err=v_err, f_pcall=f_pcall, p_r_flg=p_r_flg, f_concat=f_concat, p_r_vals=p_r_vals);
 
-        let mut k_str = String::from("{");
+        // ── isNative 筛选版 loadstring ──
+    // 不写 `loadstring or load`：那样在只暴露 load / 把 loadstring 替换成
+    // 假函数的执行器上会取到错误的东西。这里在运行期用 debug.info 判原生性
+    // （Luau 的 debug.info(f,"s") 对原生函数返回 "[C]"），只接受真正的原生
+    // 加载器。敏感词一律拆串：debug→"de".."bug"、info→"in".."fo"、
+    // loadstring→"lo".."adstring"、load→"lo".."ad"、type/pcall 同理。
+    // 整个 loader 必须自包含（只用一个形参），不能引用壳表字段 ——
+    // 它是在建表字面量时求值的，那时壳表变量还不存在。
+    let loader = {
+        let e = &v_env;
+        let probe = |src: &str| {
+            format!(
+                "(({d}[\"ty\"..\"pe\"]({s})==\"function\" and (function(...) return ((select(1,...)) and (select(2,...)==\"[C]\") and true or false) end)({d}[\"pc\"..\"all\"]({d}[\"de\"..\"bug\"][\"in\"..\"fo\"], {s}, \"s\"))) and {s} or nil)",
+                s = src, d = e
+            )
+        };
+        let c1 = probe(&format!("{e}[\"lo\"..\"adstring\"]"));
+        let c2 = probe(&format!("{e}[\"lo\"..\"ad\"]"));
+        format!(
+            "(function({e}) return {c1} or {c2} end)(_G or (getfenv and getfenv()) or {{}})",
+            e = e, c1 = c1, c2 = c2
+        )
+    };
+
+    let mut k_str = String::from("{");
         for (i, &k) in keys.iter().enumerate() {
             if i > 0 { k_str.push(','); }
             k_str.push_str(&k.to_string());
@@ -293,7 +319,7 @@ impl StubGenerator {
 
         format!("
 return ({{
-    {r_lf} = loadstring or load,
+    {r_lf} = {loader},
     {r_pc} = pcall,
     {r_er} = error,
     {r_ty} = type,
@@ -374,7 +400,7 @@ return ({{
 }}):{v_wrap}(...)
 ",
         f_load=f_load, f_pcall=f_pcall, f_char=f_char, f_byte=f_byte, f_floor=f_floor, f_concat=f_concat, f_gsub=f_gsub, f_remove=f_remove,
-        sh=sh, r_lf=r_lf, r_pc=r_pc, r_er=r_er, r_ty=r_ty, r_ch=r_ch, r_by=r_by, r_fl=r_fl, r_rnd=r_rnd, r_cat=r_cat, r_tn=r_tn, r_gs=r_gs, r_rem=r_rem, v_wrap=v_wrap,
+        sh=sh, r_lf=r_lf, loader=loader, r_pc=r_pc, r_er=r_er, r_ty=r_ty, r_ch=r_ch, r_by=r_by, r_fl=r_fl, r_rnd=r_rnd, r_cat=r_cat, r_tn=r_tn, r_gs=r_gs, r_rem=r_rem, v_wrap=v_wrap,
         v_entry=v_entry, v_data=v_data, v_q=v_q, m_bxor=m_bxor, v_s=v_s, v_a=v_a, v_b=v_b, m_bxor_body=m_bxor_body, m_next=m_next,
         m_next_body=m_next_body, m_init_map=m_init_map, m_init_map_body=m_init_map_body, m_init_insts=m_init_insts,
         m_init_insts_body=m_init_insts_body, m_init_handlers=m_init_handlers, m_init_handlers_body=m_init_handlers_body,

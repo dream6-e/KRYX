@@ -35,6 +35,11 @@ impl Packer {
         let k_rem = rng.name();
         let k_rev = rng.name();
         let k_lf = rng.name();
+        // loadstring 的原生筛选器：debug 表和它的 info 字段都走别名，
+        // 产物里不出现 `debug` / `"info"` / `loadstring or load` 字面量。
+        let f_istat = rng.name();
+        let f_getld = rng.name();
+        let d_gi = rng.name();
         let k_gm = rng.name();
         // sample2 §2.2：解码结果是 buffer 而不是 string（buffer.create / writeu32）。
         // 只支持 Luau（buffer 是 Luau 专有库），不做 lua5.1 回退。
@@ -346,6 +351,11 @@ impl Packer {
         let shell_obj = rng.name();
         sb.push_str(&format!("\nlocal function {f_entry}({v_data})\n"));
         sb.push_str("    local _;\n");
+        // isNative 筛选版 loader：直接内联进壳表的 {k_lf} 字段。
+        // 不定义任何局部函数 —— 见 native_loader 的注释（壳表槽位化会把
+        // `local function` 的名字搬走，缩名器还会让嵌套局部撞名）。
+        let (_defs, loader_expr) = Self::native_loader(rng, &f_istat, &f_getld, &d_gi, "nil");
+        let _ = (&d_gi, &f_istat, &f_getld);
         sb.push_str(&format!("    local {} = ({{\n", shell_obj));
         // ---------- m_bxor ----------
         sb.push_str(&format!("        {m_bxor} = function(q, s, a_, b_, ra, rb, p, c_, rra, rrb, k_bxor, t_cache, k_cache)\n"));
@@ -545,7 +555,10 @@ impl Packer {
             sb.push_str(&pad_fields.join("\n    , "));
             sb.push('\n');
         }
-        sb.push_str(&format!("    , {k_un} = unpack or table.unpack, {k_ch} = string.char, {k_by} = string.byte, {k_fl} = math.floor, {k_ins} = table.insert, {k_cat} = table.concat, {k_rem} = table.remove, {k_rev} = string.reverse, {k_lf} = loadstring or load, {k_gm} = string.gmatch\n    }});\n"));
+        // loadstring 不再直接取 `loadstring or load`：改成运行期用
+        // isNative 筛出真正的原生函数（详见 native_loader 的注释）。
+        sb.push_str(&format!("    , {k_un} = unpack or table.unpack, {k_ch} = string.char, {k_by} = string.byte, {k_fl} = math.floor, {k_ins} = table.insert, {k_cat} = table.concat, {k_rem} = table.remove, {k_rev} = string.reverse, {k_lf} = {loader}, {k_gm} = string.gmatch\n    }});\n",
+            loader = loader_expr.clone()));
         // sample2 §2.2：常量池解码结果是 buffer（`buffer.create` / `writeu32` / `readu8`）。
         // 只走 Luau buffer 单条路径，不再做 lua5.1 回退。
         sb.push_str(&format!("    {k_shell}.{k_buf}, {k_shell}.{k_cre}, {k_shell}.{k_wu}, {k_shell}.{k_rd}, {k_shell}.{k_wb}, {k_shell}.{k_rs}, {k_shell}.{k_ws} = buffer, buffer.create, buffer.writeu32, buffer.readu8, buffer.writeu8, buffer.readstring, buffer.writestring;\n", k_shell = shell_obj));
@@ -612,9 +625,70 @@ impl Packer {
         s.into_iter().collect()
     }
 
-    // 内部状态表字段名的整词替换：跳过字符串字面量（支持 \ 转义），先把壳里
-    // 引用全局库函数的表达式打成占位符（保护 unpack or table.unpack / string.char
-    // 等全局引用，避免被整词替换误伤），替换完成后再恢复占位符。
+    /// 生成 `isNative` + `get()` 这一对，用来在运行期筛出「真正的原生
+    /// loadstring」。
+    ///
+    /// 两个必须适配的点（实测 Luau 与标准 Lua 不同）：
+    ///
+    /// 1. Luau **没有** `debug.getinfo`，只有 `debug.info`；而且 `debug.info`
+    ///    返回的是字符串而不是表，选项是小写的 `"s"`（source）/`"l"`（line）。
+    ///    用户给的 `info.what == "C"` 这种写法在 Luau 上直接崩。
+    /// 2. 原生函数的 source 是 `[C]`，不是 `=[C]`（后者是 Lua 5.1 的形态）。
+    ///
+    /// 另外 `debug` 本身是敏感词，不能以字面量出现在产物里 —— 通过
+    /// `d_gi`（由调用方从壳表拿到的 debug 句柄）访问，产物里只有随机名。
+    ///
+    /// 返回 `(前置定义, 供赋值的表达式)`。
+    /// 生成「用 isNative 筛出真正的原生 loadstring」的字面量表达式。
+    ///
+    /// 为什么不生成 `local function ... end`：本文件的壳会经过
+    /// `Names::shrink` + 壳表槽位化改写，`local function` 会被整体搬进
+    /// 表槽（`u[0x3e41_]=function()`），原来的名字就消失了，调用点随之
+    /// 变成 nil；更糟的是缩名器按「活跃区间」复用单字符名，嵌套作用域
+    /// 会被判成不重叠而撞名（`for l=1,...` 把外层的 debug 句柄 `l` 遮蔽）。
+    ///
+    /// 所以这里只返回**一个自包含表达式**：唯一命名的局部是外层 IIFE 的
+    /// 单个形参；内层判定器只用 `...` 可变参，不声明任何名字。
+    /// 敏感词一律拆串：`debug`→`"de".."bug"`、`info`→`"in".."fo"`、
+    /// `loadstring`→`"lo".."adstring"`、`load`→`"lo".."ad"`。
+    pub(super) fn native_loader(rng: &mut GenRng, _f_istat: &str, _f_get: &str, _d_gi: &str, _v_null: &str) -> (String, String) {
+        // 运行环境实测（`toolchains/bin/luau`）：
+        //   _ENV = nil（Luau 沿用 5.1 的全局表模型）、getrenv = nil、
+        //   getgenv = nil、_G = table、debug.info = function（debug.getinfo 不存在）。
+        // 所以环境一律从 `_G` 取，且 `_G` 必须排在 `_ENV` 前面 ——
+        // `_ENV or _G` 虽然也能兜住，但多一次 nil 判断，白白暴露形态。
+        let e = rng.name();
+        // 环境表本身。顺序固定：先 _G（Luau/Lua 都有），再 getfenv() 兜 5.x。
+        let env = r#"_G or (getfenv and getfenv()) or {}"#;
+        // 单个候选的判定：
+        //   1. 类型必须是 function（load/nil 时不进 pcall）
+        //   2. debug.info 能认得它是原生函数（source == "[C]"）
+        //   3. 满足前两条才把这个候选本身作为表达式的值（不是布尔）
+        // 内层 IIFE 只吃 pcall 的两个返回值，用 select 取，不声明任何局部 ——
+        // 缩名器会把嵌套局部与外层局部撞成同名（见模块顶部说明）。
+        let probe = |src: &str| {
+            format!(
+                // 注意：这里既不能写裸 `pcall`/`type`（体内有同名局部别名，
+                // Reshape 会把它们槽位化成 `u[...]`，而 `u` 在本表字面量求值
+                // 时还没建立），也不能写 `{d}.pcall`（`{d}` 是环境表没错，
+                // 但保持与 debug 同一取法更一致）。一律走环境表。
+                "(({d}[\"ty\"..\"pe\"]({s})==\"function\" and (function(...) return ((select(1,...)) and (select(2,...)==\"[C]\") and true or false) end)({d}[\"pc\"..\"all\"]({d}[\"de\"..\"bug\"][\"in\"..\"fo\"], {s}, \"s\"))) and {s} or nil)",
+                s = src, d = e
+            )
+        };
+        let c1 = probe(&format!("{e}[\"lo\"..\"adstring\"]"));
+        let c2 = probe(&format!("{e}[\"lo\"..\"ad\"]"));
+        // 只保留环境表里的两个候选。原先还并列了裸 `loadstring` / `load` 作
+        // c3/c4，但那和 c1/c2 取的是同一个值（环境表里就是这两个全局），
+        // 属于纯冗余，而且会在产物里留下两个明文词 —— 删掉。
+        // 环境里只剩一条（例如只实现 loadstring 的执行器）时，c2 自然返回 nil。
+        let expr = format!(
+            "(function({e}) return {c1} or {c2} end)({env})",
+            e = e, env = env, c1 = c1, c2 = c2
+        );
+        (String::new(), expr)
+    }
+
     pub(super) fn rename_lua_idents(code: &str, pairs: &[(&str, &str)]) -> String {
         use std::collections::HashMap;
 
