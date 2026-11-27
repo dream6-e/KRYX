@@ -744,4 +744,7 @@ fn build_opcode_tree(handlers: &[(u32, String)], min_idx: usize, max_idx: usize,
 
 mod impl_generator;
 mod data_fields;
-mod entry_wrap;
+// pub：`decoder.rs` / `stub_generator.rs` 生成 isNative 判定代码时也要用
+// 这里的 `escaped_literal_q`，把 `"lo".."adstring"`、`"de".."bug"` 这类
+// 敏感词字面量渲染成与报错改写同款的多转义混用形态。
+pub mod entry_wrap;
