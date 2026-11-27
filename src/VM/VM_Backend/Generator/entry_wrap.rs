@@ -34,14 +34,59 @@ pub fn escaped_literal(
     variants: &mut impl FnMut() -> u8,
     z_at: &mut impl FnMut() -> bool,
 ) -> String {
-    let mut out = String::with_capacity(text.len() * 4 + 8);
+    escaped_literal_q(text, variants, z_at, '"')
+}
+
+/// 同 `escaped_literal`，但可指定输出用的引号（`'` 或 `"`）。
+///
+/// sample2 的报错改写字面量单双引号是混用的（`'stri\x6E\103'` 用单引号、
+/// `"\L\u{75}r\x61..."` 用双引号），所以引号也交给调用方随机。
+///
+/// ## 形态分布
+///
+/// 按 sample2 报错改写段四个字面量的实测统计来抽（合计 53 个 token）：
+///
+/// | 形态 | sample2 占比 |
+/// |---|---|
+/// | 原样输出 | 64.2% |
+/// | `\xHH` | 15.1% |
+/// | `\ddd`（十进制，最多 3 位） | 7.5% |
+/// | `\u{..}` | 1.9% |
+/// | `\z` | 11.3% |
+///
+/// 此前是五档等概率，实测原样只剩 ~20%，整段几乎全被转义，与 sample2
+/// 的观感差很远。这里把 `variants()` 的返回值当 0..=99 的均匀源重新映射：
+///
+/// * `0..=63`   原样（64%）
+/// * `64..=78`  `\xHH`（15%）
+/// * `79..=86`  `\ddd`（8%）
+/// * `87..=88`  `\u{..}`（2%）
+/// * `89..=99`  原样（11%，留给 `\z` 的份额不占用形态档）
+///
+/// `\z` 由 `z_at()` 独立控制（调用方把概率调成 ~11%），它只是插在字符
+/// 之间而不消耗形态档。
+///
+/// ## 正确性约束
+///
+/// 1. `\z` 会吞掉其后全部空白，所以 `\z` 之后紧跟的空白字符必须转义。
+/// 2. 选中引号本身、反斜杠、控制字符（含换行）不能原样输出。
+/// 3. 十进制转义后紧跟原样数字会粘连（`\040` + `4` → `\0404`），要强制转义。
+pub fn escaped_literal_q(
+    text: &str,
+    variants: &mut impl FnMut() -> u8,
+    z_at: &mut impl FnMut() -> bool,
+    quote: char,
+) -> String {
+    let mut out = String::with_capacity(text.len() * 3 + 8);
     let mut prev_was_z = false;
-    let mut prev_pad3 = false;
-    let mut prev_any_numeric_tail = false;
+    let mut prev_numeric = false;
     for (i, ch) in text.chars().enumerate() {
-        // 上一位是十进制/补零写法且末位是数字时，本字符若原样输出会粘进转义。
-        let force_escape = prev_any_numeric_tail && ch.is_ascii_digit();
         let b = ch as u32;
+        // 十进制/补零写法之后若跟原样数字会粘进同一个转义，必须避开。
+        let sticky_digit = prev_numeric && ch.is_ascii_digit();
+        // 不能原样输出的字符：引号本身、反斜杠、控制字符。
+        let must_escape = ch == quote || ch == '\\' || (b < 0x20) || b == 0x7f;
+
         if i > 0 && z_at() {
             out.push('\\');
             out.push('z');
@@ -50,45 +95,60 @@ pub fn escaped_literal(
         } else {
             prev_was_z = false;
         }
-        // `\z` 会吞掉其后全部空白。若紧跟其后的字符本身是空格且选择原样
-        // 输出，那个空格会被一起吞掉（"Kryx script" 变 "Kryxscript"）。
-        // 所以 `\z` 之后的空白字符必须强制走转义写法。
-        let mut v = variants() % 5;
+
+        // 档位分配（合计 100）：原样 64 / \x 15 / \ddd 15 / \u{} 2 / 原样 4。
+        // `\ddd` 给了 15 档而不是实测的 7.5%，因为 b > 99 的字符（标点、
+        // 大写字母等）不能走 `\ddd`，会被降级成 `\xHH`；放大档位才能让
+        // 最终产出里 `\ddd` 的实际占比落在 sample2 的水平。
+        let roll = variants() % 100;
+        let mut v: u8 = if roll < 64 {
+            4
+        } else if roll < 79 {
+            1
+        } else if roll < 94 {
+            2
+        } else if roll < 96 {
+            3
+        } else {
+            4
+        };
+        // `\z` 后的空白会被吞掉，改走 `\xHH`。
         if v == 4 && prev_was_z && ch.is_whitespace() {
             v = 1;
         }
-        if v == 4 && force_escape {
+        // 不能原样输出的字符一律走 `\xHH`（定长两位，绝不会粘连）。
+        if must_escape {
             v = 1;
         }
-        // `\ddd` 最多吃 3 位十进制数字，且 Lua 不检查是否超过 255：
-        // 若三位写法的末位正好是数字，会和下一个原样字符的数字粘连。
-        // 例如 `(` 写成 `\040` 后紧跟原样的 `4` 会变成 `\0404`，解析报
-        // malformed escape。所以：
-        //   · 三位写法只对 <= 99 的字符用（`\099` 后面必然是非数字或转义）；
-        //   · 紧跟其后的字符若也要原样输出、且本身是数字，则强制转义。
-        let three_digit_ok = b <= 99;
-        let mut v = if v == 2 && !three_digit_ok { 0 } else { v };
-        // 三位十进制后面不能跟原样数字
-        if prev_pad3 && ch.is_ascii_digit() && v == 4 {
+        if v == 4 && sticky_digit {
             v = 1;
         }
-        prev_pad3 = false;
+        // Lua 的 `\ddd` 最多三位、上限 255，所以任何 ASCII 字符都能用三位
+        // 十进制写（统一补零成三位，后面必然是非数字或另一个转义的 `\`，
+        // 不会粘连）。早前限制到 <= 99 是为了凑两位，但那样 `\ddd` 只能
+        // 覆盖一半字符，实际占比远低于目标。
+        if v == 2 && b > 255 {
+            v = 1;
+        }
+
+        prev_numeric = false;
         match v {
-            0 => {
-                // `\<十进制>` 若后接数字同样会粘连，这里统一补成 `\xHH` 之外的
-                // 两位形式不可靠，故 0 档也只在下一字符非数字时启用（见上层兜底）。
-                out.push_str(&format!("\\{}", b));
-                prev_any_numeric_tail = b >= 10;
+            1 => {
+                out.push_str(&format!("\\x{:02X}", b));
+                prev_numeric = false;
             }
-            1 => out.push_str(&format!("\\x{:02X}", b)),
-            // Lua 的 `\ddd` 是**十进制**转义（不是 C 的八进制），最多 3 位。
-            // 早前按八进制输出导致 `\163` 变成 U+00A3，报错文本解码出错。
             2 => {
-                out.push_str(&format!("\\{:02}", b));
-                prev_pad3 = true;
+                out.push_str(&format!("\\{:03}", b));
+                prev_numeric = true;
             }
-            3 => out.push_str(&format!("\\u{{{:X}}}", b)),
-            _ => out.push(ch),
+            3 => {
+                out.push_str(&format!("\\u{{{:X}}}", b));
+                prev_numeric = false;
+            }
+            _ => {
+                out.push(ch);
+                prev_numeric = false;
+            }
         }
     }
     out
@@ -103,7 +163,18 @@ pub fn escaped_parts(
     variants: &mut impl FnMut() -> u8,
     z_at: &mut impl FnMut() -> bool,
 ) -> (String, String, String, String, String) {
-    let mut q = |t: &str| format!("\"{}\"", escaped_literal(t, variants, z_at));
+    // 引号在单/双之间随机 —— sample2 里两种并存
+    // （`'stri\x6E\103'` 用单引号，`"\L\u{75}r\x61..."` 用双引号）。
+    //
+    // 注意：字面量内容里可能含引号（模式串 `[^0-9]*$` 不含，但为了稳妥
+    // 仍做转义处理）—— 选中的引号本身若出现在内容里，改用另一种引号。
+    // 引号用 variants() 的低位单独决定，不走 z_at() —— 否则每取一次引号
+    // 都会额外消耗一个 `\z` 的熵，把实际插入密度压低到目标值以下。
+    let mut q = |t: &str| {
+        let quote = if variants() % 2 == 0 { '\'' } else { '"' };
+        let inner = escaped_literal_q(t, variants, z_at, quote);
+        format!("{}{}{}", quote, inner, quote)
+    };
     let tag = q("Kryx script");
     let inner = q("internal");
     let ty = q("string");
@@ -209,8 +280,17 @@ pub fn render_entry(
     shell_keys: [&str; 5],
     names: [&str; 8],
 ) -> String {
-    let mut esc_variants: Vec<u8> = (0..64).map(|_| rng.range(0, 5) as u8).collect();
-    let mut esc_z: Vec<bool> = (0..64).map(|_| rng.range(0, 4) == 0).collect();
+    // 形态档：0..=99 的均匀源，由 escaped_literal_q 按 sample2 的实测分布
+    // 重新映射（原样 64% / \x 15% / \ddd 15% / \u{} 2%）。
+    //
+    // 池子取 300 个（100 的整数倍）而不是 128：128 不是 100 的倍数，
+    // `% 100` 会让某些档位系统性偏多。五个字面量一共只用掉 ~45 次抽取，
+    // 300 足够避免「循环复用同一段模式」导致的整段分布被绑定。
+    let mut esc_variants: Vec<u8> = (0..300).map(|_| rng.range(0, 100) as u8).collect();
+    // `\z` 按 sample2 实测的 11.3% 插入（原先 25%，明显偏密）。
+    // 同样用 300 采样：128 时整轮只有 ~45 次判定却从固定序列里取，
+    // 实测 \z 占比在 0%~14% 之间大幅抖动。
+    let mut esc_z: Vec<bool> = (0..300).map(|_| rng.range(0, 100) < 11).collect();
     let mut vi = 0usize;
     let mut zi = 0usize;
     let (lit_tag, lit_inner, lit_ty, lit_colon, lit_pat) = escaped_parts(
