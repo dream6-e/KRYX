@@ -298,59 +298,18 @@ impl StubGenerator {
     //
     // 整个 loader 必须自包含（只用一个形参），不能引用壳表字段 ——
     // 它是在建表字面量时求值的，那时壳表变量还不存在。
+    // 与 decoder.rs 的 `Packer::native_loader` 同一套实现（buffer + XOR 滚动解密 +
+    // 数字表分段），见 `VM::packer::loader`。这里只是把随机源换成 NamePool。
     let loader = {
-        let e = v_env.clone();
-        // 与 decoder.rs 的 `Packer::esc_lit` 等价：先采随机序列再渲染，
-        // 避免两个闭包同时可变借用 pool。
-        let mut esc = |pool: &mut NamePool, text: &str| -> String {
-            use crate::VM::VM_Backend::Generator::entry_wrap::escaped_literal_q;
-            let quote = if pool.rng_mut().next_range(0, 2) == 0 { '\'' } else { '"' };
-            let n = text.chars().count() * 4 + 8;
-            let variants: Vec<u8> = (0..n).map(|_| pool.rng_mut().next_range(0, 100) as u8).collect();
-            let zs: Vec<bool> = (0..n).map(|_| pool.rng_mut().next_range(0, 100) < 11).collect();
-            let mut vi = 0usize;
-            let mut zi = 0usize;
-            let body = escaped_literal_q(
-                text,
-                &mut || { let v = variants[vi % variants.len()]; vi += 1; v },
-                &mut || { let z = zs[zi % zs.len()]; zi += 1; z },
-                quote,
-            );
-            format!("{}{}{}", quote, body, quote)
-        };
-        let l_ty  = esc(&mut pool, "ty");
-        let l_pe  = esc(&mut pool, "pe");
-        let l_pc  = esc(&mut pool, "pc");
-        let l_all = esc(&mut pool, "all");
-        let l_de  = esc(&mut pool, "de");
-        let l_bug = esc(&mut pool, "bug");
-        let l_in  = esc(&mut pool, "in");
-        let l_fo  = esc(&mut pool, "fo");
-        let l_lo  = esc(&mut pool, "lo");
-        let l_ads = esc(&mut pool, "adstring");
-        let l_ad  = esc(&mut pool, "ad");
-        let l_fn  = esc(&mut pool, "function");
-        let l_c   = esc(&mut pool, "[C]");
-        let l_s   = esc(&mut pool, "s");
-        let ty     = format!("{}..{}", l_ty, l_pe);
-        let pcall_ = format!("{}..{}", l_pc, l_all);
-        let debug_ = format!("{}..{}", l_de, l_bug);
-        let info_  = format!("{}..{}", l_in, l_fo);
-        let lstr   = format!("{}..{}", l_lo, l_ads);
-        let ld     = format!("{}..{}", l_lo, l_ad);
-        let probe = |src: &str| {
-            format!(
-                "(({d}[{ty}]({s})=={fn_} and (function(...) return ((select(1,...)) and (select(2,...)=={c}) and true or false) end)({d}[{pc}]({d}[{dg}][{inf}], {s}, {sq}))) and {s} or nil)",
-                d = e, ty = ty, s = src, fn_ = l_fn, c = l_c,
-                pc = pcall_, dg = debug_, inf = info_, sq = l_s
-            )
-        };
-        let c1 = probe(&format!("{e}[{ls}]", e = e, ls = lstr));
-        let c2 = probe(&format!("{e}[{ld}]", e = e, ld = ld));
-        format!(
-            "(function({e}) return {c1} or {c2} end)(_G or (getfenv and getfenv()) or {{}})",
-            e = e, c1 = c1, c2 = c2
-        )
+        let mut names: Vec<String> = Vec::with_capacity(
+            crate::VM::packer::loader::ENC_LOADER_NAMES,
+        );
+        for _ in 0..crate::VM::packer::loader::ENC_LOADER_NAMES {
+            names.push(pool.get());
+        }
+        crate::VM::packer::loader::build_encrypted_loader(&names, &mut |lo, hi| {
+            if hi <= lo { lo } else { pool.rng_mut().next_range(lo, hi) }
+        })
     };
 
     let mut k_str = String::from("{");

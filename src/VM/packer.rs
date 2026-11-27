@@ -8,6 +8,8 @@ use crate::VM::VM_Backend::Generator::GenRng;
 use crate::VM::VM_Backend::Sandbox::generate_sandbox;
 
 mod decoder;
+/// 加密版 isNative loader（buffer + XOR 滚动解密 + 数字表分段）。
+pub mod loader;
 
 
 struct SimpleRng {

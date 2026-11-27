@@ -3,37 +3,9 @@
 use super::Packer;
 use crate::VM::cf_wrap;
 use crate::VM::Control_Flow::Control_flow::ControlFlowBuilder;
-use crate::VM::VM_Backend::Generator::entry_wrap::escaped_literal_q;
 use crate::VM::VM_Backend::Generator::GenRng;
 
 impl Packer {
-    /// 把一个纯文本渲染成「多转义混用」的 Lua 字符串字面量（含引号）。
-    ///
-    /// 与报错改写段（`Generator::entry_wrap::escaped_parts`）用同一套渲染：
-    /// 按 sample2 实测分布混合原样 / `\xHH` / `\ddd` / `\u{..}` / `\z`，
-    /// 引号在单双之间随机。这样 `"lo".."adstring"`、`"de".."bug"` 这类
-    /// 敏感词不再以干净的明文双引号字符串出现，而是和其他字面量同一观感。
-    ///
-    /// 注意：`text` 只放**单个词**（如 `ty`、`adstring`），拼接仍用 `..`。
-    fn esc_lit(rng: &mut GenRng, text: &str) -> String {
-        let quote = if rng.range(0, 2) == 0 { '\'' } else { '"' };
-        // 两个闭包都会捕获 rng，同时传进去会触发 E0524（两次可变借用）。
-        // 先把随机序列采出来，闭包只读数组，不再碰 rng。
-        // 长度按「字符位 + 余量」给：形态与 \z 各按一位取，4 倍足够。
-        let n = text.chars().count() * 4 + 8;
-        let variants: Vec<u8> = (0..n).map(|_| rng.range(0, 100) as u8).collect();
-        let zs: Vec<bool> = (0..n).map(|_| rng.range(0, 100) < 11).collect();
-        let mut vi = 0usize;
-        let mut zi = 0usize;
-        let body = escaped_literal_q(
-            text,
-            &mut || { let v = variants[vi % variants.len()]; vi += 1; v },
-            &mut || { let z = zs[zi % zs.len()]; zi += 1; z },
-            quote,
-        );
-        format!("{}{}{}", quote, body, quote)
-    }
-
     pub(super) fn build_decoder(keys: &[u8], rng: &mut GenRng) -> (String, String) {
         // entry 常量：严格降序、两两间距 ≥100（a>b>c>d），供 cf_wrap 判断条件推算真假
         let vd = rng.range(1, 1500) as i64;
@@ -685,64 +657,16 @@ impl Packer {
         //   getgenv = nil、_G = table、debug.info = function（debug.getinfo 不存在）。
         // 所以环境一律从 `_G` 取，且 `_G` 必须排在 `_ENV` 前面 ——
         // `_ENV or _G` 虽然也能兜住，但多一次 nil 判断，白白暴露形态。
-        let e = rng.name();
-        // 环境表本身。顺序固定：先 _G（Luau/Lua 都有），再 getfenv() 兜 5.x。
-        let env = r#"_G or (getfenv and getfenv()) or {}"#;
-
-        // 所有敏感词字面量都走与报错改写同款的多转义混用渲染：
-        // 原样 / \xHH / \ddd / \u{..} / \z 按 sample2 分布混合，引号单双随机。
-        // 这样产物里不再出现干净的 `"lo".."adstring"` 这种形态，
-        // 与壳里其他字面量观感一致，静态扫描也拿不到明文词。
-        let l_ty   = Self::esc_lit(rng, "ty");
-        let l_pe   = Self::esc_lit(rng, "pe");
-        let l_pc   = Self::esc_lit(rng, "pc");
-        let l_all  = Self::esc_lit(rng, "all");
-        let l_de   = Self::esc_lit(rng, "de");
-        let l_bug  = Self::esc_lit(rng, "bug");
-        let l_in   = Self::esc_lit(rng, "in");
-        let l_fo   = Self::esc_lit(rng, "fo");
-        let l_lo   = Self::esc_lit(rng, "lo");
-        let l_ads  = Self::esc_lit(rng, "adstring");
-        let l_ad   = Self::esc_lit(rng, "ad");
-        let l_fn   = Self::esc_lit(rng, "function");
-        let l_c    = Self::esc_lit(rng, "[C]");
-        let l_s    = Self::esc_lit(rng, "s");
-        // 同一个词在表达式里出现多次时复用同一份字面量（避免体积翻倍，
-        // 也避免同文件里同一个词出现两种转义形态而显眼）。
-        let ty   = format!("{}{}..{}", l_ty, "", l_pe);
-        let pcall_ = format!("{}{}..{}", l_pc, "", l_all);
-        let debug_ = format!("{}{}..{}", l_de, "", l_bug);
-        let info_  = format!("{}{}..{}", l_in, "", l_fo);
-        let lstr   = format!("{}{}..{}", l_lo, "", l_ads);
-        let ld     = format!("{}{}..{}", l_lo, "", l_ad);
-
-        // 单个候选的判定：
-        //   1. 类型必须是 function（load/nil 时不进 pcall）
-        //   2. debug.info 能认得它是原生函数（source == "[C]"）
-        //   3. 满足前两条才把这个候选本身作为表达式的值（不是布尔）
-        // 内层 IIFE 只吃 pcall 的两个返回值，用 select 取，不声明任何局部 ——
-        // 缩名器会把嵌套局部与外层局部撞成同名（见模块顶部说明）。
         //
-        // 注意：这里既不能写裸 `pcall`/`type`（体内有同名局部别名，
-        // Reshape 会把它们槽位化成 `u[...]`，而 `u` 在本表字面量求值
-        // 时还没建立），也不能写 `{d}.pcall` 之外的简写。一律走环境表。
-        let probe = |src: &str| {
-            format!(
-                "(({d}[{ty}]({s})=={fn_} and (function(...) return ((select(1,...)) and (select(2,...)=={c}) and true or false) end)({d}[{pc}]({d}[{dg}][{inf}], {s}, {sq}))) and {s} or nil)",
-                d = e, ty = ty, s = src, fn_ = l_fn, c = l_c,
-                pc = pcall_, dg = debug_, inf = info_, sq = l_s
-            )
-        };
-        let c1 = probe(&format!("{e}[{ls}]", e = e, ls = lstr));
-        let c2 = probe(&format!("{e}[{ld}]", e = e, ld = ld));
-        // 只保留环境表里的两个候选。原先还并列了裸 `loadstring` / `load` 作
-        // c3/c4，但那和 c1/c2 取的是同一个值（环境表里就是这两个全局），
-        // 属于纯冗余，而且会在产物里留下两个明文词 —— 删掉。
-        // 环境里只剩一条（例如只实现 loadstring 的执行器）时，c2 自然返回 nil。
-        let expr = format!(
-            "(function({e}) return {c1} or {c2} end)({env})",
-            e = e, env = env, c1 = c1, c2 = c2
-        );
+        // 敏感词不再以「多转义混用的字符串字面量」出现：满屏 \x / \ddd 比明文
+        // 更扎眼。改成 buffer + XOR 滚动解密 + 数字表分段，详见 `packer::loader`。
+        let mut names: Vec<String> = Vec::with_capacity(crate::VM::packer::loader::ENC_LOADER_NAMES);
+        for _ in 0..crate::VM::packer::loader::ENC_LOADER_NAMES {
+            names.push(rng.name());
+        }
+        let expr = crate::VM::packer::loader::build_encrypted_loader(&names, &mut |lo, hi| {
+            if hi <= lo { lo } else { rng.range(lo, hi) }
+        });
         (String::new(), expr)
     }
 
