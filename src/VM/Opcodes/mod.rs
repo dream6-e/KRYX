@@ -44,6 +44,9 @@ pub struct OpcodeConfig {
     pub upvals: String,
     pub env: String,
     pub protos: String,
+    /// 原型表的 upvalue 数量字段名（原先模板里写死 `p.nups`，
+    /// 产物里一眼可见「这是按 nups 循环装 upvalue」）。
+    pub proto_nups: String,
     pub handlers: String,
     pub varargs: String,
     pub varargs_len: String,
@@ -116,6 +119,7 @@ impl<'a> OpcodeBuilder<'a> {
         code = code.replace("{UPVALS}", &self.cfg.upvals);
         code = code.replace("{ENV}", &self.cfg.env);
         code = code.replace("{PROTOS}", &self.cfg.protos);
+        code = code.replace("{PROTO_NUPS}", &self.cfg.proto_nups);
         code = code.replace("{HANDLERS}", &self.cfg.handlers);
         code = code.replace("{VARARGS}", &self.cfg.varargs);
         code = code.replace("{VARARGS_LEN}", &self.cfg.varargs_len);

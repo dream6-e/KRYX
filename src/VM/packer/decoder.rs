@@ -90,6 +90,27 @@ impl Packer {
         let f_concat = rng.name();
         let f_remove = rng.name();
         let f_reverse = rng.name();
+        // ── buffer 通道 + 解压状态字段 ────────────────────────────────
+        // 这批字段名原先直接以 `s.rbuf` / `s.rpos` / `s.snap` 等固定字面量
+        // 写在模板里：既没登记进 Names 登记表（shrink 不会压），也没进下面
+        // 的 post_pairs（词法替换不会改），所以产物里一直留着
+        // `rbuf` `rpos` `wbuf` `snap` `size` `copy` `create` `push`
+        // 这些语义名 —— 一眼就能看出「这里有个 buffer 读写指针」。
+        let f_rbuf = rng.name();
+        let f_rpos = rng.name();
+        let f_wbuf = rng.name();
+        let f_snap = rng.name();
+        let f_size = rng.name();
+        let f_copy = rng.name();
+        let f_create = rng.name();
+        let f_pushf = rng.name();
+        // `wb` / `rb` / `rs` 不能进整词替换表：`rb` 同时是 bxor 的形参名
+        // （`function(q, s, a_, b_, ra, rb, ...)`、`ra, rb, p, c_ = ...`），
+        // 整词替换会把形参一起改名、和函数体引用脱钩。只按 `s.rb` 这种
+        // 带点形态精确替换。
+        let f_wb = rng.name();
+        let f_rb = rng.name();
+        let f_rs = rng.name();
         // ┌──────────────────────────────────────────────────────────────┐
         // │  KRYX 水印常量 —— 固定值，不要改动！                          │
         // │  这是 `load(sb_code, "<chunkname>")` 的 chunkname 参数，       │
@@ -544,8 +565,14 @@ impl Packer {
         sb.push_str(&format!("                unpack = q.{k_un}, char = q.{k_ch}, byte = q.{k_by}, floor = q.{k_fl}, insert = q.{k_ins}, concat = q.{k_cat}, remove = q.{k_rem}, reverse = q.{k_rev},\n"));
         // sample2 §2.2 buffer 通道：这里只放占位，真正的句柄在 s 建好后
         // 由 m_main 内的赋值语句写回（局部变量无法内联进表字面量的求值顺序）。
-        sb.push_str("                wbuf = false, create = false, wb = false, rb = false, rs = false,\n");
-        sb.push_str("                push = false, size = false, copy = false, snap = false,\n");
+        // 状态表初始化：键名必须是随机名，否则 `wbuf=false, create=false,
+        // wb=false, rb=false, rs=false` 这串本身就是一张说明书。
+        sb.push_str(&format!(
+            "                {} = false, {} = false, {} = false, {} = false, {} = false,\n",
+            f_wbuf, f_create, f_wb, f_rb, f_rs));
+        sb.push_str(&format!(
+            "                {} = false, {} = false, {} = false, {} = false,\n",
+            f_pushf, f_size, f_copy, f_snap));
         sb.push_str("                bc = 0, rbuf = nil, rpos = 0, f = 0, p1 = 0, p2 = 0, w = 0, u = 0, ptr = 0\n");
         sb.push_str("            });\n        end\n");
         // 第 3/5 类：内建别名 + 样板填充函数，作为壳表的附加字段（sample2 的壳里
@@ -604,7 +631,30 @@ impl Packer {
             ("concat", f_concat.as_str()),
             ("remove", f_remove.as_str()),
             ("reverse", f_reverse.as_str()),
+            // 整词安全的 buffer 通道字段（在 Lua 文本里只以字段形态出现）
+            ("rbuf", f_rbuf.as_str()),
+            ("rpos", f_rpos.as_str()),
+            ("wbuf", f_wbuf.as_str()),
+            ("snap", f_snap.as_str()),
+            ("size", f_size.as_str()),
+            ("copy", f_copy.as_str()),
+            ("push", f_pushf.as_str()),
+            // `create` 不在这里：`buffer.create` 里也有 `create`，
+            // 整词替换会把库字段一起改名，必须走下面的带点替换。
         ];
+        // 带点路径替换：`s.create` / `s.wb` / `s.rb` / `s.rs`。
+        // 只匹配 `s.xxx` 形态，不会碰到 `buffer.create`，也不会碰到形参
+        // `rb`。`s.wbuf` 必须排在 `s.wb` 前面，否则被前缀吞掉。
+        let mut script = script;
+        for (from, to) in [
+            ("s.wbuf", format!("s.{}", f_wbuf)),
+            ("s.wb", format!("s.{}", f_wb)),
+            ("s.rb", format!("s.{}", f_rb)),
+            ("s.rs", format!("s.{}", f_rs)),
+            ("s.create", format!("s.{}", f_create)),
+        ] {
+            script = script.replace(from, &to);
+        }
         let script = Self::rename_lua_idents(&script, &post_pairs);
         // 2) 常量局部变量注入（消毒之后插入，字面量保留）
         let script = script.replacen(

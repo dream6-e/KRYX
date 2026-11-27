@@ -216,6 +216,25 @@ impl Generator {
             tbl_p: rng.name() 
         };
 
+        // &#9472;&#9472; 原型表（chunk）字段名 &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
+        // 这批字段原先全部是硬编码字面量（`{fn_c}.ld`、`chunk.{kf_opcodes}`、
+        // `p.nups` …），于是产物里一直留着 `ld` `lld` `nups` `opcodes`
+        // `a_arr` `consts` `protos` `numparams` 等名字，把整个反序列化
+        // 流程讲得一清二楚。这里全部换成 rng 随机名，且**定义点与读取点
+        // 必须同源**（都引用同一批变量），否则运行期读不到字段。
+        let kf_n = rng.name();
+        let kf_ld = rng.name();
+        let kf_lld = rng.name();
+        let kf_nups = rng.name();
+        let kf_numparams = rng.name();
+        let kf_is_vararg = rng.name();
+        let kf_maxstack = rng.name();
+        let kf_opcodes = rng.name();
+        let kf_a_arr = rng.name();
+        let kf_b_arr = rng.name();
+        let kf_c_arr = rng.name();
+        let kf_consts = rng.name();
+        let kf_protos = rng.name();
         let fn_bx = rng.name();
         let fn_ba = rng.name();
         let fn_bs = rng.name();
@@ -275,9 +294,9 @@ impl Generator {
         block_execute_def.push_str(&format!("local {} = function(...) return {}[{}]('#', ...) end; ", var_get_count, var_s, hex_select_idx));
         block_execute_def.push_str(&format!("local {} = {}(...); ", var_L, var_get_count));
         block_execute_def.push_str(&format!("local unpack, zm = {}.{}, function(...) return {{n={}(...),...}} end; ", var_shell, k_unpack, var_get_count));
-        block_execute_def.push_str(&format!("local {}, {}, {}, {}, {}, {}, {} = chunk.opcodes, chunk.a_arr, chunk.b_arr, chunk.c_arr, 1, {{}}, 0; ", var_opcodes, var_a_arr, var_b_arr, var_c_arr, var_pc, var_stk, var_top));
-        block_execute_def.push_str(&format!("for _=1,chunk.numparams do {}[_-1] = {}[{}](_,...) end; ", var_stk, var_s, hex_select_idx));
-        block_execute_def.push_str(&format!("local {} = {} - chunk.numparams; local {} = {{{}[{}](chunk.numparams + 1, ...)}}; ", var_varargs_len, var_L, var_varargs, var_s, hex_select_idx));
+        block_execute_def.push_str(&format!("local {}, {}, {}, {}, {}, {}, {} = chunk.{kf_opcodes}, chunk.{kf_a_arr}, chunk.{kf_b_arr}, chunk.{kf_c_arr}, 1, {{}}, 0; ", var_opcodes, var_a_arr, var_b_arr, var_c_arr, var_pc, var_stk, var_top));
+        block_execute_def.push_str(&format!("for _=1,chunk.{kf_numparams} do {}[_-1] = {}[{}](_,...) end; ", var_stk, var_s, hex_select_idx));
+        block_execute_def.push_str(&format!("local {} = {} - chunk.{kf_numparams}; local {} = {{{}[{}](chunk.{kf_numparams} + 1, ...)}}; ", var_varargs_len, var_L, var_varargs, var_s, hex_select_idx));
         block_execute_def.push_str("while true do ");
         block_execute_def.push_str(&format!("{} = true; ", var_state_flag));
         block_execute_def.push_str(&format!("local op = {}[{}]; ", var_opcodes, var_pc));
@@ -286,7 +305,7 @@ impl Generator {
         block_execute_def.push_str(&format!("local inst_C = {}[{}]; ", var_c_arr, var_pc));
         block_execute_def.push_str(&format!("{} = {} + 1; ", var_pc, var_pc));
         
-        let cfg = OpcodeConfig { pc: var_pc.clone(), stk: var_stk.clone(), consts: "chunk.consts".to_string(), top: var_top.clone(), insts: var_insts.clone(), inst: var_inst.clone(), upvals: "upvals".to_string(), env: "env".to_string(), protos: "chunk.protos".to_string(), handlers: String::new(), varargs: var_varargs.clone(), varargs_len: var_varargs_len.clone(), virtual_closures: var_vc.clone(), builtin_reg: var_builtin_reg.clone(), global_get: gget.clone(), global_set: gset.clone() };
+        let cfg = OpcodeConfig { pc: var_pc.clone(), stk: var_stk.clone(), consts: format!("chunk.{}", kf_consts), top: var_top.clone(), insts: var_insts.clone(), inst: var_inst.clone(), upvals: "upvals".to_string(), env: "env".to_string(), protos: format!("chunk.{}", kf_protos), proto_nups: kf_nups.clone(), handlers: String::new(), varargs: var_varargs.clone(), varargs_len: var_varargs_len.clone(), virtual_closures: var_vc.clone(), builtin_reg: var_builtin_reg.clone(), global_get: gget.clone(), global_set: gset.clone() };
         let mut raw_handlers = Opcodes::generate_handlers(&mapped_opcodes, &cfg, self.ctx.seed).replace("execute(", &format!("{}(", fn_execute));
         
         raw_handlers = raw_handlers.replace(
@@ -449,24 +468,24 @@ impl Generator {
                 local {fn_c}, {t}, {var_state} = {{}}, nil, {obf_s_init}; \
                 while true do \
                     if {var_state} == {obf_s_init} then \
-                        {fn_c}.n={fn_read_string}(); \
-                        {fn_c}.ld={fn_a5}(); \
-                        {fn_c}.lld={fn_a5}(); \
-                        {fn_c}.nups={fn_a3}(); \
-                        {fn_c}.numparams={fn_a3}(); \
-                        {fn_c}.is_vararg={fn_a3}(); \
-                        {fn_c}.maxstack={fn_a3}(); \
+                        {fn_c}.{kf_n}={fn_read_string}(); \
+                        {fn_c}.{kf_ld}={fn_a5}(); \
+                        {fn_c}.{kf_lld}={fn_a5}(); \
+                        {fn_c}.{kf_nups}={fn_a3}(); \
+                        {fn_c}.{kf_numparams}={fn_a3}(); \
+                        {fn_c}.{kf_is_vararg}={fn_a3}(); \
+                        {fn_c}.{kf_maxstack}={fn_a3}(); \
                         {var_state} = {obf_s_insts}; \
                     elseif {var_state} == {obf_s_insts} then \
-                        {fn_c}.opcodes={{}}; \
-                        {fn_c}.a_arr={{}}; \
-                        {fn_c}.b_arr={{}}; \
-                        {fn_c}.c_arr={{}}; \
+                        {fn_c}.{kf_opcodes}={{}}; \
+                        {fn_c}.{kf_a_arr}={{}}; \
+                        {fn_c}.{kf_b_arr}={{}}; \
+                        {fn_c}.{kf_c_arr}={{}}; \
                         for _={one_obf},{fn_a5}() do \
-                            {fn_c}.opcodes[_]={fn_a5}(); \
-                            {fn_c}.a_arr[_]={fn_a3}(); \
-                            {fn_c}.b_arr[_]={fn_a10}(); \
-                            {fn_c}.c_arr[_]={fn_a10}(); \
+                            {fn_c}.{kf_opcodes}[_]={fn_a5}(); \
+                            {fn_c}.{kf_a_arr}[_]={fn_a3}(); \
+                            {fn_c}.{kf_b_arr}[_]={fn_a10}(); \
+                            {fn_c}.{kf_c_arr}[_]={fn_a10}(); \
                         end; \
                         {var_state} = {obf_s_consts}; \
                     elseif {var_state} == {obf_s_consts} then \
@@ -502,7 +521,7 @@ impl Generator {
                             end; \
                             return val \
                         end; \
-                        {fn_c}.consts=setmetatable({{}},mt_consts); \
+                        {fn_c}.{kf_consts}=setmetatable({{}},mt_consts); \
                         for _={one_obf},{fn_a5}() do \
                             {t}={fn_a3}(); \
                             if {t}=={one_obf} then \
@@ -519,9 +538,9 @@ impl Generator {
                         end; \
                         {var_state} = {obf_s_protos}; \
                     elseif {var_state} == {obf_s_protos} then \
-                        {fn_c}.protos={{}}; \
+                        {fn_c}.{kf_protos}={{}}; \
                         for _={one_obf},{fn_a5}() do \
-                            {fn_c}.protos[_]={fn_dec_chunk}() \
+                            {fn_c}.{kf_protos}[_]={fn_dec_chunk}() \
                         end; \
                         {var_state} = {obf_s_debug}; \
                     elseif {var_state} == {obf_s_debug} then \

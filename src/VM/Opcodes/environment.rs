@@ -80,7 +80,7 @@ pub fn generate(m: &[Vec<u32>], cfg: &OpcodeConfig, rng: &mut OpcodesRng) -> Str
     let check_str = all_checks.join(" or ");
 
     out.push_str(&closure.build(&format!(
-        "local p = {{PROTOS}}[{}+1]; local uv = {{}}; {{STK}}.open_ups = {{STK}}.open_ups or {{}}; for j = 1, p.nups do local uv_inst = {{INSTS}}[{{PC}}]; {{PC}} = {{PC}} + 1; if {} then local reg = uv_inst[3]; if not {{STK}}.open_ups[reg] then {{STK}}.open_ups[reg] = {{{{STK}}, reg}} end; uv[j] = {{STK}}.open_ups[reg] else uv[j] = {{UPVALS}}[uv_inst[3]+1] end end; {{STK}}[{}] = function(...) return execute(p, getfenv and getfenv(1) or env, uv, ...) end",
+        "local p = {{PROTOS}}[{}+1]; local uv = {{}}; {{STK}}.open_ups = {{STK}}.open_ups or {{}}; for j = 1, p.{{PROTO_NUPS}} do local uv_inst = {{INSTS}}[{{PC}}]; {{PC}} = {{PC}} + 1; if {} then local reg = uv_inst[3]; if not {{STK}}.open_ups[reg] then {{STK}}.open_ups[reg] = {{{{STK}}, reg}} end; uv[j] = {{STK}}.open_ups[reg] else uv[j] = {{UPVALS}}[uv_inst[3]+1] end end; {{STK}}[{}] = function(...) return execute(p, getfenv and getfenv(1) or env, uv, ...) end",
         cl_b, check_str, cl_a
     )));
 
