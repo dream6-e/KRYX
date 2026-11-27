@@ -288,14 +288,15 @@ pub fn render_entry(
     // 300 足够避免「循环复用同一段模式」导致的整段分布被绑定。
     let mut esc_variants: Vec<u8> = (0..300).map(|_| rng.range(0, 100) as u8).collect();
     // `\z` 按 sample2 实测的 11.3% 插入（原先 25%，明显偏密）。
-    // 同样用 300 采样：128 时整轮只有 ~45 次判定却从固定序列里取，
-    // 实测 \z 占比在 0%~14% 之间大幅抖动。
-    let mut esc_z: Vec<bool> = (0..300).map(|_| rng.range(0, 100) < 11).collect();
+    //
+    // 这里**不用预采样表**：五个字面量一共只有 ~48 次判定，从固定序列里
+    // 取前 48 个，实测命中率在 0%~4% 与 14% 之间大幅抖动（20 次生成汇总
+    // 只有 7.1%，低于目标 11.3%）。改成每次判定独立取一个随机数，
+    // 期望值就是 11%，不再依赖序列前段的偶然分布。
     let mut vi = 0usize;
-    let mut zi = 0usize;
     let (lit_tag, lit_inner, lit_ty, lit_colon, lit_pat) = escaped_parts(
         &mut || { let v = esc_variants[vi % esc_variants.len()]; vi += 1; v },
-        &mut || { let z = esc_z[zi % esc_z.len()]; zi += 1; z },
+        &mut || rng.range(0, 100) < 11,
     );
     let k = |i: usize| format!("{}.{}", var_shell, shell_keys[i]);
     wrap_entry(
